@@ -9,13 +9,13 @@ import (
 type Header struct {
 	Version        uint8
 	IHL            uint8
-	TypeOfService  uint8
+	TOS            *TypeOfService
 	TotalLength    uint16
 	Identification uint16
 	Flags          uint8
 	FragOffset     uint16
 	TTL            uint8
-	Protocol       uint8
+	Protocol       string
 	Checksum       uint16
 	SourceAddr     netip.Addr
 	DestAddr       netip.Addr
@@ -23,18 +23,27 @@ type Header struct {
 	Padding        string
 }
 
+var protocols = map[uint8]string{1: "ICMP", 6: "TCP", 17: "UDP"}
+
 func Parse(raw []byte) (Header, []byte, error) {
 	h := Header{}
+	if len(raw) < 20 {
+		return h, nil, fmt.Errorf("raw packet header is too small %d", len(raw))
+	}
 	h.Version = raw[0] >> 4
 	h.IHL = raw[0] & 0x0F
-	h.TypeOfService = raw[1]
+	h.TOS = (&TypeOfService{raw: raw[1]}).Process()
 	h.TotalLength = binary.BigEndian.Uint16(raw[2:4])
 	h.Identification = binary.BigEndian.Uint16(raw[4:6])
 	flagsFragment := binary.BigEndian.Uint16(raw[6:8])
 	h.Flags = uint8(flagsFragment >> 13)  // top 3 bits
 	h.FragOffset = flagsFragment & 0x1FFF // bottom 13 bits
 	h.TTL = raw[8]
-	h.Protocol = raw[9]
+	proto, ok := protocols[raw[9]]
+	if !ok {
+		return h, nil, fmt.Errorf("unidentified protocol type: %d", raw[9])
+	}
+	h.Protocol = proto
 	h.Checksum = binary.BigEndian.Uint16(raw[10:12])
 	h.SourceAddr = netip.AddrFrom4([4]byte{raw[12], raw[13], raw[14], raw[15]})
 	h.DestAddr = netip.AddrFrom4([4]byte{raw[16], raw[17], raw[18], raw[19]})
@@ -44,13 +53,13 @@ func Parse(raw []byte) (Header, []byte, error) {
 func (h Header) Print() {
 	fmt.Printf("Version: %d\n", h.Version)
 	fmt.Printf("IHL: %d\n", h.IHL)
-	fmt.Printf("TypeOfService: %d\n", h.TypeOfService)
+	h.TOS.Print()
 	fmt.Printf("TotalLength: %d\n", h.TotalLength)
 	fmt.Printf("Identification: 0x%04x\n", h.Identification)
 	fmt.Printf("Flags: 0x%x\n", h.Flags)
 	fmt.Printf("FragOffset: %d\n", h.FragOffset)
 	fmt.Printf("TTL: %d\n", h.TTL)
-	fmt.Printf("Protocol: %d\n", h.Protocol)
+	fmt.Printf("Protocol: %s\n", h.Protocol)
 	fmt.Printf("Checksum: 0x%04x\n", h.Checksum)
 	fmt.Printf("SourceAddr: %s\n", h.SourceAddr)
 	fmt.Printf("DestAddr: %s\n", h.DestAddr)
