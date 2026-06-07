@@ -2,6 +2,7 @@ package ipv4
 
 import (
 	"encoding/hex"
+	"errors"
 	"os"
 	"path"
 	"strings"
@@ -68,5 +69,25 @@ func TestHeaderParseEcho(t *testing.T) {
 	}
 	if h.TTL != 64 {
 		t.Fatal("Wrong TTL != 64")
+	}
+}
+
+func TestHeaderParseErrTooShort(t *testing.T) {
+	_, _, err := Parse(nil)
+	if err == nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(err, ErrTooShort) {
+		t.Fatal(err)
+	}
+}
+
+func TestHeaderParseErrTooShortBuffer(t *testing.T) {
+	_, _, err := Parse(make([]byte, 19))
+	if err == nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(err, ErrTooShort) {
+		t.Fatal(err)
 	}
 }

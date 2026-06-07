@@ -20,6 +20,7 @@ type Header struct {
 	Checksum       uint16
 	SourceAddr     netip.Addr
 	DestAddr       netip.Addr
+	HeaderLength   int
 }
 
 const HeaderMinLength = 20
@@ -43,11 +44,15 @@ func Parse(raw []byte) (Header, []byte, error) {
 		return h, nil, ErrBadVersion
 	}
 	h.IHL = raw[0] & 0x0F
-	if int(h.IHL*4) > len(raw) {
+	h.HeaderLength = int(h.IHL * 4)
+	if h.HeaderLength > len(raw) {
 		return h, nil, ErrInvalidIHL
 	}
 	h.TOS = (&TypeOfService{raw: raw[1]}).Process()
 	h.TotalLength = binary.BigEndian.Uint16(raw[2:4])
+	if int(h.TotalLength) > len(raw) || int(h.TotalLength) < h.HeaderLength {
+		return h, nil, ErrTooShort
+	}
 	h.Identification = binary.BigEndian.Uint16(raw[4:6])
 	flagsFragment := binary.BigEndian.Uint16(raw[6:8])
 	h.Flags = uint8(flagsFragment >> 13)  // top 3 bits
@@ -61,7 +66,7 @@ func Parse(raw []byte) (Header, []byte, error) {
 	h.Checksum = binary.BigEndian.Uint16(raw[10:12])
 	h.SourceAddr = netip.AddrFrom4([4]byte{raw[12], raw[13], raw[14], raw[15]})
 	h.DestAddr = netip.AddrFrom4([4]byte{raw[16], raw[17], raw[18], raw[19]})
-	return h, raw[:20], nil
+	return h, raw[h.IHL*4 : h.TotalLength], nil
 }
 
 func (h Header) Print() {
