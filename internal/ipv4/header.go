@@ -2,6 +2,7 @@ package ipv4
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net/netip"
 )
@@ -19,19 +20,32 @@ type Header struct {
 	Checksum       uint16
 	SourceAddr     netip.Addr
 	DestAddr       netip.Addr
-	Options        string
-	Padding        string
 }
+
+const HeaderMinLength = 20
 
 var protocols = map[uint8]string{1: "ICMP", 6: "TCP", 17: "UDP"}
 
+var (
+	ErrTooShort             = errors.New("ipv4: buffer too short")
+	ErrBadVersion           = errors.New("ipv4: not IPV4")
+	ErrInvalidIHL           = errors.New("ipv4: IHL extends past buffer")
+	ErrUnidentifiedProtocol = errors.New("ipv4: protocol identified is unknown")
+)
+
 func Parse(raw []byte) (Header, []byte, error) {
 	h := Header{}
-	if len(raw) < 20 {
-		return h, nil, fmt.Errorf("raw packet header is too small %d", len(raw))
+	if len(raw) < HeaderMinLength {
+		return h, nil, ErrTooShort
 	}
 	h.Version = raw[0] >> 4
+	if h.Version != 4 {
+		return h, nil, ErrBadVersion
+	}
 	h.IHL = raw[0] & 0x0F
+	if int(h.IHL*4) > len(raw) {
+		return h, nil, ErrInvalidIHL
+	}
 	h.TOS = (&TypeOfService{raw: raw[1]}).Process()
 	h.TotalLength = binary.BigEndian.Uint16(raw[2:4])
 	h.Identification = binary.BigEndian.Uint16(raw[4:6])
@@ -41,7 +55,7 @@ func Parse(raw []byte) (Header, []byte, error) {
 	h.TTL = raw[8]
 	proto, ok := protocols[raw[9]]
 	if !ok {
-		return h, nil, fmt.Errorf("unidentified protocol type: %d", raw[9])
+		return h, nil, ErrUnidentifiedProtocol
 	}
 	h.Protocol = proto
 	h.Checksum = binary.BigEndian.Uint16(raw[10:12])
@@ -63,6 +77,4 @@ func (h Header) Print() {
 	fmt.Printf("Checksum: 0x%04x\n", h.Checksum)
 	fmt.Printf("SourceAddr: %s\n", h.SourceAddr)
 	fmt.Printf("DestAddr: %s\n", h.DestAddr)
-	fmt.Printf("Options: % x\n", h.Options)
-	fmt.Printf("Padding: % x\n", h.Padding)
 }

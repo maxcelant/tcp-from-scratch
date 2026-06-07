@@ -1,10 +1,14 @@
 package ipv4
 
 import (
+	"encoding/hex"
+	"os"
+	"path"
+	"strings"
 	"testing"
 )
 
-func TestHeaderParse(t *testing.T) {
+func TestHeaderParsePrint(t *testing.T) {
 	raw := []byte{
 		0x45,       // Version=4, IHL=5
 		0x00,       // ToS
@@ -19,4 +23,50 @@ func TestHeaderParse(t *testing.T) {
 	}
 	h, _, _ := Parse(raw)
 	h.Print()
+}
+
+func TestHeaderParseBasic(t *testing.T) {
+	raw, err := os.ReadFile(path.Join("..", "..", "testdata", "ipv4-basic.hex"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stripped := strings.Join(strings.Fields(string(raw)), "")
+	decoded, err := hex.DecodeString(stripped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, decoded, err := Parse(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Print()
+	if h.Protocol != "TCP" {
+		t.Fatal("Wrong protocol != TCP")
+	}
+	if h.TTL != 64 {
+		t.Fatal("Wrong TTL != 64")
+	}
+}
+
+func TestHeaderParseEcho(t *testing.T) {
+	raw, err := os.ReadFile(path.Join("..", "..", "testdata", "icmp-echo.hex"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stripped := strings.Join(strings.Fields(string(raw)), "")
+	decoded, err := hex.DecodeString(stripped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, decoded, err := Parse(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Print()
+	if h.Protocol != "ICMP" {
+		t.Fatal("Wrong protocol != ICMP")
+	}
+	if h.TTL != 64 {
+		t.Fatal("Wrong TTL != 64")
+	}
 }
