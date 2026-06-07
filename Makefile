@@ -1,7 +1,8 @@
 .PHONY: dev build down net-up net-down tcpdump review hint clean test vet
 
 # Drop into the dev container (interactive shell). All lesson work happens inside.
-dev:
+# Depends on `build` so the image exists locally (avoids a registry pull).
+dev: build
 	docker compose run --rm --service-ports dev
 
 # Build the image without entering it.

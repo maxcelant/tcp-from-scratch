@@ -10,7 +10,6 @@ hints:
   - "Open a shell with `make dev`. The container has `go`, `tcpdump`, `iproute2`, and `/dev/net/tun` ready. If `make dev` fails, Docker isn't running."
   - "Run /review to see the exact missing file."
 ---
-
 # Lesson 00 — Intro & Setup
 
 Welcome. By the end of this tutorial you will have written, line by line in Go, a working TCP stack that can perform a real 3-way handshake with a Python HTTP server, send a `GET /`, receive the response, and close the connection cleanly — using your own implementation of IPv4 + TCP, not the kernel's.
