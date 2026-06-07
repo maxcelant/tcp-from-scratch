@@ -58,10 +58,11 @@ func TestHeaderParseBasic(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.Print()
-	if protocols[h.Protocol] != "TCP" {
+	p, err := h.Protocol()
+	if p != "TCP" || err != nil {
 		t.Fatal("Wrong protocol != TCP")
 	}
-	if h.TTL != 64 {
+	if h.ttl != 64 {
 		t.Fatal("Wrong TTL != 64")
 	}
 }
@@ -81,10 +82,11 @@ func TestHeaderParseEcho(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.Print()
-	if protocols[h.Protocol] != "ICMP" {
-		t.Fatal("Wrong protocol != ICMP")
+	p, err := h.Protocol()
+	if p != "TCP" || err != nil {
+		t.Fatal("Wrong protocol != TCP")
 	}
-	if h.TTL != 64 {
+	if h.ttl != 64 {
 		t.Fatal("Wrong TTL != 64")
 	}
 }

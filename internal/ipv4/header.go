@@ -11,18 +11,18 @@ import (
 
 type Header struct {
 	Version        uint8
-	IHL            uint8
-	TOS            uint8
-	TotalLength    uint16
-	Identification uint16
-	Flags          uint8
-	FragOffset     uint16
-	TTL            uint8
-	Protocol       uint8
-	Checksum       uint16
-	SourceAddr     netip.Addr
-	DestAddr       netip.Addr
-	HeaderLength   int
+	ihl            uint8
+	typeOfService  uint8
+	totalLength    uint16
+	identification uint16
+	flags          uint8
+	fragOffset     uint16
+	ttl            uint8
+	protocol       uint8
+	checksum       uint16
+	srcAddr        netip.Addr
+	dstAddr        netip.Addr
+	headerLength   int
 }
 
 const HeaderMinLength = 20
@@ -45,55 +45,55 @@ func Parse(raw []byte) (Header, []byte, error) {
 	if h.Version != 4 {
 		return h, nil, ErrBadVersion
 	}
-	h.IHL = raw[0] & 0x0F
-	h.HeaderLength = int(h.IHL * 4)
-	if h.HeaderLength > len(raw) {
+	h.ihl = raw[0] & 0x0F
+	h.headerLength = int(h.ihl * 4)
+	if h.headerLength > len(raw) {
 		return h, nil, ErrInvalidIHL
 	}
-	h.TOS = raw[1]
-	h.TotalLength = binary.BigEndian.Uint16(raw[2:4])
-	if int(h.TotalLength) > len(raw) || int(h.TotalLength) < h.HeaderLength {
+	h.typeOfService = raw[1]
+	h.totalLength = binary.BigEndian.Uint16(raw[2:4])
+	if int(h.totalLength) > len(raw) || int(h.totalLength) < h.headerLength {
 		return h, nil, ErrTooShort
 	}
-	h.Identification = binary.BigEndian.Uint16(raw[4:6])
+	h.identification = binary.BigEndian.Uint16(raw[4:6])
 	flagsFragment := binary.BigEndian.Uint16(raw[6:8])
-	h.Flags = uint8(flagsFragment >> 13)  // top 3 bits
-	h.FragOffset = flagsFragment & 0x1FFF // bottom 13 bits
-	h.TTL = raw[8]
+	h.flags = uint8(flagsFragment >> 13)  // top 3 bits
+	h.fragOffset = flagsFragment & 0x1FFF // bottom 13 bits
+	h.ttl = raw[8]
 	_, ok := protocols[raw[9]]
 	if !ok {
 		return h, nil, ErrUnidentifiedProtocol
 	}
-	h.Protocol = raw[9]
-	h.Checksum = binary.BigEndian.Uint16(raw[10:12])
-	h.SourceAddr = netip.AddrFrom4([4]byte{raw[12], raw[13], raw[14], raw[15]})
-	h.DestAddr = netip.AddrFrom4([4]byte{raw[16], raw[17], raw[18], raw[19]})
-	return h, raw[h.IHL*4 : h.TotalLength], nil
+	h.protocol = raw[9]
+	h.checksum = binary.BigEndian.Uint16(raw[10:12])
+	h.srcAddr = netip.AddrFrom4([4]byte{raw[12], raw[13], raw[14], raw[15]})
+	h.dstAddr = netip.AddrFrom4([4]byte{raw[16], raw[17], raw[18], raw[19]})
+	return h, raw[h.ihl*4 : h.totalLength], nil
 }
 
 func (h *Header) Marshal(dst []byte) (int, error) {
 	if len(dst) < HeaderMinLength {
 		return 0, ErrTooShort
 	}
-	dst[0] = byte((h.Version << 4) + h.IHL)
-	dst[1] = h.TOS
-	dst[2] = byte(h.TotalLength >> 8)
-	dst[3] = byte(h.TotalLength & 0xFF)
-	dst[4] = byte(h.Identification >> 8)
-	dst[5] = byte(h.Identification & 0xFF)
-	dst[6] = byte(h.FragOffset>>8) + (h.Flags << 5)
-	dst[7] = byte(h.FragOffset) // truncating the 16 bit into 8 bit removes left top half
-	dst[8] = h.TTL
-	dst[9] = h.Protocol
+	dst[0] = byte((h.Version << 4) + h.ihl)
+	dst[1] = h.typeOfService
+	dst[2] = byte(h.totalLength >> 8)
+	dst[3] = byte(h.totalLength & 0xFF)
+	dst[4] = byte(h.identification >> 8)
+	dst[5] = byte(h.identification & 0xFF)
+	dst[6] = byte(h.fragOffset>>8) + (h.flags << 5)
+	dst[7] = byte(h.fragOffset) // truncating the 16 bit into 8 bit removes left top half
+	dst[8] = h.ttl
+	dst[9] = h.protocol
 	// Compute checksum at the end
 	dst[10] = 0
 	dst[11] = 0
-	addr4 := h.SourceAddr.As4()
+	addr4 := h.srcAddr.As4()
 	dst[12] = addr4[0]
 	dst[13] = addr4[1]
 	dst[14] = addr4[2]
 	dst[15] = addr4[3]
-	addr4 = h.DestAddr.As4()
+	addr4 = h.dstAddr.As4()
 	dst[16] = addr4[0]
 	dst[17] = addr4[1]
 	dst[18] = addr4[2]
@@ -104,17 +104,28 @@ func (h *Header) Marshal(dst []byte) (int, error) {
 	return 20, nil
 }
 
+func (h Header) Protocol() (string, error) {
+	if h.protocol == 0 {
+		return "", fmt.Errorf("Protocol is unset in header")
+	}
+	p, ok := protocols[h.protocol]
+	if !ok {
+		return "", fmt.Errorf("Unidentified protocol: %d", h.protocol)
+	}
+	return p, nil
+}
+
 func (h Header) Print() {
 	fmt.Printf("Version: %d\n", h.Version)
-	fmt.Printf("IHL: %d\n", h.IHL)
-	fmt.Printf("TOS %d\n", h.TOS)
-	fmt.Printf("TotalLength: %d\n", h.TotalLength)
-	fmt.Printf("Identification: 0x%04x\n", h.Identification)
-	fmt.Printf("Flags: 0x%x\n", h.Flags)
-	fmt.Printf("FragOffset: %d\n", h.FragOffset)
-	fmt.Printf("TTL: %d\n", h.TTL)
-	fmt.Printf("Protocol: %s\n", protocols[h.Protocol])
-	fmt.Printf("Checksum: 0x%04x\n", h.Checksum)
-	fmt.Printf("SourceAddr: %s\n", h.SourceAddr)
-	fmt.Printf("DestAddr: %s\n", h.DestAddr)
+	fmt.Printf("IHL: %d\n", h.ihl)
+	fmt.Printf("TOS %d\n", h.typeOfService)
+	fmt.Printf("TotalLength: %d\n", h.totalLength)
+	fmt.Printf("Identification: 0x%04x\n", h.identification)
+	fmt.Printf("Flags: 0x%x\n", h.flags)
+	fmt.Printf("FragOffset: %d\n", h.fragOffset)
+	fmt.Printf("TTL: %d\n", h.ttl)
+	fmt.Printf("Protocol: %s\n", protocols[h.protocol])
+	fmt.Printf("Checksum: 0x%04x\n", h.checksum)
+	fmt.Printf("SourceAddr: %s\n", h.srcAddr)
+	fmt.Printf("DestAddr: %s\n", h.dstAddr)
 }
