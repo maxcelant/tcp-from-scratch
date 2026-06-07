@@ -1,0 +1,20 @@
+services:
+  dev:
+    build: .
+    image: tcp-from-scratch:dev
+    container_name: tcp-from-scratch-dev
+    hostname: tcpfs
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - "/dev/net/tun:/dev/net/tun"
+    volumes:
+      - .:/workspace
+      - go-mod-cache:/go/pkg/mod
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+    command: /bin/bash
+
+volumes:
+  go-mod-cache:
