@@ -10,7 +10,12 @@ import (
 )
 
 type Header struct {
-	Version        uint8
+	SourceAddr netip.Addr
+	DestAddr   netip.Addr
+	Version    uint8
+	Protocol   uint8
+	Checksum   uint16
+
 	ihl            uint8
 	typeOfService  uint8
 	totalLength    uint16
@@ -18,16 +23,20 @@ type Header struct {
 	flags          uint8
 	fragOffset     uint16
 	ttl            uint8
-	protocol       uint8
-	checksum       uint16
-	srcAddr        netip.Addr
-	dstAddr        netip.Addr
 	headerLength   int
 }
 
 const HeaderMinLength = 20
 
-var protocols = map[uint8]string{1: "ICMP", 6: "TCP", 17: "UDP"}
+type InternetProtocol string
+
+const (
+	ProtoICMP InternetProtocol = "ICMP"
+	ProtoTCP  InternetProtocol = "TCP"
+	ProtoUDP  InternetProtocol = "UDP"
+)
+
+var protocols = map[uint8]InternetProtocol{1: ProtoICMP, 6: ProtoTCP, 17: ProtoUDP}
 
 var (
 	ErrTooShort             = errors.New("ipv4: buffer too short")
@@ -64,10 +73,10 @@ func Parse(raw []byte) (Header, []byte, error) {
 	if !ok {
 		return h, nil, ErrUnidentifiedProtocol
 	}
-	h.protocol = raw[9]
-	h.checksum = binary.BigEndian.Uint16(raw[10:12])
-	h.srcAddr = netip.AddrFrom4([4]byte{raw[12], raw[13], raw[14], raw[15]})
-	h.dstAddr = netip.AddrFrom4([4]byte{raw[16], raw[17], raw[18], raw[19]})
+	h.Protocol = raw[9]
+	h.Checksum = binary.BigEndian.Uint16(raw[10:12])
+	h.SourceAddr = netip.AddrFrom4([4]byte{raw[12], raw[13], raw[14], raw[15]})
+	h.DestAddr = netip.AddrFrom4([4]byte{raw[16], raw[17], raw[18], raw[19]})
 	return h, raw[h.ihl*4 : h.totalLength], nil
 }
 
@@ -84,16 +93,16 @@ func (h *Header) Marshal(dst []byte) (int, error) {
 	dst[6] = byte(h.fragOffset>>8) + (h.flags << 5)
 	dst[7] = byte(h.fragOffset) // truncating the 16 bit into 8 bit removes left top half
 	dst[8] = h.ttl
-	dst[9] = h.protocol
+	dst[9] = h.Protocol
 	// Compute checksum at the end
 	dst[10] = 0
 	dst[11] = 0
-	addr4 := h.srcAddr.As4()
+	addr4 := h.SourceAddr.As4()
 	dst[12] = addr4[0]
 	dst[13] = addr4[1]
 	dst[14] = addr4[2]
 	dst[15] = addr4[3]
-	addr4 = h.dstAddr.As4()
+	addr4 = h.DestAddr.As4()
 	dst[16] = addr4[0]
 	dst[17] = addr4[1]
 	dst[18] = addr4[2]
@@ -104,15 +113,12 @@ func (h *Header) Marshal(dst []byte) (int, error) {
 	return 20, nil
 }
 
-func (h Header) Protocol() (string, error) {
-	if h.protocol == 0 {
-		return "", fmt.Errorf("Protocol is unset in header")
-	}
-	p, ok := protocols[h.protocol]
+func (h Header) IsProtocol(proto InternetProtocol) bool {
+	p, ok := protocols[h.Protocol]
 	if !ok {
-		return "", fmt.Errorf("Unidentified protocol: %d", h.protocol)
+		return false
 	}
-	return p, nil
+	return p == proto
 }
 
 func (h Header) Print() {
@@ -124,8 +130,8 @@ func (h Header) Print() {
 	fmt.Printf("Flags: 0x%x\n", h.flags)
 	fmt.Printf("FragOffset: %d\n", h.fragOffset)
 	fmt.Printf("TTL: %d\n", h.ttl)
-	fmt.Printf("Protocol: %s\n", protocols[h.protocol])
-	fmt.Printf("Checksum: 0x%04x\n", h.checksum)
-	fmt.Printf("SourceAddr: %s\n", h.srcAddr)
-	fmt.Printf("DestAddr: %s\n", h.dstAddr)
+	fmt.Printf("Protocol: %s\n", protocols[h.Protocol])
+	fmt.Printf("Checksum: 0x%04x\n", h.Checksum)
+	fmt.Printf("SourceAddr: %s\n", h.SourceAddr)
+	fmt.Printf("DestAddr: %s\n", h.DestAddr)
 }
