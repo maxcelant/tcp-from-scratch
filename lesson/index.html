@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TCP From Scratch — build a TCP/IP stack in Go</title>
+<link rel="stylesheet" href="assets/lesson.css">
+<script>(function(){try{var t=localStorage.getItem("tcpfs-theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">TCP From Scratch</a>
+  <div class="topbar-right">
+    <span class="lesson-counter">15 lessons</span>
+    <button class="theme-toggle" type="button" aria-label="Toggle theme">🌙</button>
+  </div>
+</header>
+
+<section class="hero">
+  <p class="eyebrow">A hands-on tutorial in Go</p>
+  <h1>Build TCP from scratch.</h1>
+  <p>Fifteen bite-sized lessons that take you from an empty Go module to a working TCP/IP stack — one that performs a real 3-way handshake, transfers data reliably over a lossy link, tears the connection down cleanly, and speaks HTTP/1.0 to a real server. Every byte produced by code you wrote.</p>
+</section>
+
+<p class="phase-label">Setup &amp; plumbing</p>
+<div class="lesson-grid">
+  <a class="card" href="00-intro.html"><span class="num">00</span><span class="title">Intro &amp; Setup</span><span class="desc">The big picture, the TUN device, and the network model that makes the kernel your test peer.</span></a>
+  <a class="card" href="01-tun-device.html"><span class="num">01</span><span class="title">Opening a TUN device</span><span class="desc">The only package that touches the OS. Read and write raw L3 packet bytes.</span></a>
+</div>
+
+<p class="phase-label">The IP layer</p>
+<div class="lesson-grid">
+  <a class="card" href="02-ipv4-parse.html"><span class="num">02</span><span class="title">Parsing IPv4 headers</span><span class="desc">Bytes-in, struct-out. Decode the IPv4 header field by field.</span></a>
+  <a class="card" href="03-checksum.html"><span class="num">03</span><span class="title">The Internet checksum</span><span class="desc">RFC 1071 — the one function every other layer depends on.</span></a>
+  <a class="card" href="04-ipv4-marshal-icmp.html"><span class="num">04</span><span class="title">Serializing IPv4 + ICMP echo</span><span class="desc">Your first program that sends packets. Make <code>ping 10.0.0.2</code> work.</span></a>
+</div>
+
+<p class="phase-label">TCP fundamentals</p>
+<div class="lesson-grid">
+  <a class="card" href="05-tcp-header.html"><span class="num">05</span><span class="title">TCP header parse/serialize</span><span class="desc">The main event — including the pseudo-header checksum that trips everyone up.</span></a>
+  <a class="card" href="06-tcb-state-machine.html"><span class="num">06</span><span class="title">TCB &amp; state machine</span><span class="desc">Model TCP's brain: the 11-state FSM and the sequence-number bookkeeping.</span></a>
+</div>
+
+<p class="phase-label">The handshake &amp; data flow</p>
+<div class="lesson-grid">
+  <a class="card" href="07-passive-open.html"><span class="num">07</span><span class="title">Passive open: SYN → SYN/ACK</span><span class="desc">The read loop, demultiplexing by 4-tuple, and the first half of the handshake.</span></a>
+  <a class="card" href="08-handshake-complete.html"><span class="num">08</span><span class="title">Completing the handshake</span><span class="desc">Handle the final ACK, reach ESTABLISHED, and return a usable connection.</span></a>
+  <a class="card" href="09-receiving-data.html"><span class="num">09</span><span class="title">Receiving data + ACKing</span><span class="desc">In-order delivery, the receive buffer, and <code>Conn.Read</code> as an <code>io.Reader</code>.</span></a>
+  <a class="card" href="10-sending-data.html"><span class="num">10</span><span class="title">Sending data</span><span class="desc">Segmentation, the send window, and <code>Conn.Write</code> — now <code>io.Copy</code> just works.</span></a>
+</div>
+
+<p class="phase-label">Reliability &amp; teardown</p>
+<div class="lesson-grid">
+  <a class="card" href="11-retransmission.html"><span class="num">11</span><span class="title">Retransmission (RTO)</span><span class="desc">The feature that makes TCP reliable. Resend lost segments using a testable clock.</span></a>
+  <a class="card" href="12-active-open.html"><span class="num">12</span><span class="title">Active open (client)</span><span class="desc"><code>tcp.Dial</code> — send the first SYN and become a client.</span></a>
+  <a class="card" href="13-fin-teardown.html"><span class="num">13</span><span class="title">FIN teardown</span><span class="desc">Graceful shutdown through FIN-WAIT, CLOSE-WAIT, LAST-ACK, and TIME-WAIT.</span></a>
+</div>
+
+<p class="phase-label">Capstone</p>
+<div class="lesson-grid">
+  <a class="card" href="14-capstone.html"><span class="num">14</span><span class="title">Speak HTTP/1.0</span><span class="desc"><code>curl-lite</code>: connect to a real server, <code>GET /</code>, print the response. Proof you built TCP.</span></a>
+</div>
+
+<footer class="site">TCP From Scratch · build a TCP/IP stack in Go, one lesson at a time</footer>
+
+<script src="assets/lesson.js"></script>
+</body>
+</html>

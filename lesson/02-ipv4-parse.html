@@ -1,0 +1,206 @@
+<!--lesson-meta
+id: "02"
+title: Parsing IPv4 headers
+requires:
+  files:
+    - internal/ipv4/header.go
+    - internal/ipv4/header_test.go
+  symbols:
+    - { pkg: ./internal/ipv4, name: Header }
+    - { pkg: ./internal/ipv4, name: Parse }
+  tests:
+    - ./internal/ipv4/...
+hints:
+  - "Start with the wire layout (RFC 791 §3.1). The first byte holds two nibbles: version (high) and IHL (low). Mask + shift to extract them."
+  - "Total Length and the other 16-bit fields are big-endian (network byte order). `encoding/binary.BigEndian.Uint16(b[i:i+2])` is your friend."
+  - "Don't try to parse options yet — skip them. Just trust IHL: header is `IHL * 4` bytes, payload starts there. We'll come back to options if we ever need them (we won't)."
+  - "Common bug: not validating `len(b) >= 20`. The minimum IPv4 header is 20 bytes; anything less is malformed. Return a sentinel error."
+  - "Common bug: forgetting that IHL is in 32-bit words, not bytes. IHL=5 means 20-byte header."
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 02 — Parsing IPv4 headers · TCP From Scratch</title>
+<link rel="stylesheet" href="assets/lesson.css">
+<script>(function(){try{var t=localStorage.getItem("tcpfs-theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">TCP From Scratch</a>
+  <div class="topbar-right">
+    <span class="lesson-counter">Lesson 02 / 14</span>
+    <button class="theme-toggle" type="button" aria-label="Toggle theme">🌙</button>
+  </div>
+</header>
+<div class="progress-rail"><div class="progress-fill"></div></div>
+
+<main class="lesson">
+<article>
+  <p class="eyebrow">Lesson 02 · The IP layer</p>
+  <h1>Parsing IPv4 headers</h1>
+  <p class="lead">You'll write a parser that decodes the IPv4 header from a byte slice into a Go struct. No I/O — pure bytes-in, struct-out.</p>
+
+  <h2>Background</h2>
+
+  <h3>The IPv4 header <span class="pill">RFC 791 §3.1</span></h3>
+  <p>Every row below is 32 bits wide. All multi-byte fields are <strong>big-endian</strong> (network byte order).</p>
+
+  <div class="bytemap">
+    <div class="bytemap-ruler">
+      <span>0</span><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>10</span><span>11</span><span>12</span><span>13</span><span>14</span><span>15</span><span>16</span><span>17</span><span>18</span><span>19</span><span>20</span><span>21</span><span>22</span><span>23</span><span>24</span><span>25</span><span>26</span><span>27</span><span>28</span><span>29</span><span>30</span><span>31</span>
+    </div>
+    <div class="bytemap-rows">
+      <div class="field b-blue"   style="--bits:4"><span class="fname">Version</span><span class="fbits">4 b · =4</span></div>
+      <div class="field b-cyan"   style="--bits:4"><span class="fname">IHL</span><span class="fbits">4 b</span></div>
+      <div class="field b-slate"  style="--bits:8"><span class="fname">TOS</span><span class="fbits">1 byte</span></div>
+      <div class="field b-green"  style="--bits:16"><span class="fname">Total Length</span><span class="fbits">2 bytes</span></div>
+
+      <div class="field b-amber"  style="--bits:16"><span class="fname">Identification</span><span class="fbits">2 bytes</span></div>
+      <div class="field b-rose"   style="--bits:3"><span class="fname">Flags</span><span class="fbits">3 b</span></div>
+      <div class="field b-violet" style="--bits:13"><span class="fname">Fragment Offset</span><span class="fbits">13 b</span></div>
+
+      <div class="field b-slate"  style="--bits:8"><span class="fname">TTL</span><span class="fbits">1 byte</span></div>
+      <div class="field b-green"  style="--bits:8"><span class="fname">Protocol</span><span class="fbits">1 byte · 6=TCP</span></div>
+      <div class="field b-rose"   style="--bits:16"><span class="fname">Header Checksum</span><span class="fbits">2 bytes</span></div>
+
+      <div class="field b-blue"   style="--bits:32"><span class="fname">Source Address</span><span class="fbits">4 bytes</span></div>
+      <div class="field b-violet" style="--bits:32"><span class="fname">Destination Address</span><span class="fbits">4 bytes</span></div>
+      <div class="field b-slate dim" style="--bits:32"><span class="fname">Options + Padding (we skip)</span><span class="fbits">(IHL−5)×4 bytes</span></div>
+    </div>
+    <div class="bytemap-caption">The 20-byte minimum IPv4 header. Options only appear when IHL &gt; 5 — we skip them.</div>
+  </div>
+
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Size</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td>Version</td><td>4 bits</td><td>Must be 4</td></tr>
+      <tr><td>IHL</td><td>4 bits</td><td>Header length in <strong>32-bit words</strong>. Min 5 (= 20 bytes).</td></tr>
+      <tr><td>TOS</td><td>1 byte</td><td>DSCP/ECN. Ignore for now; carry through.</td></tr>
+      <tr><td>Total Length</td><td>2 bytes</td><td>Whole packet (header + payload) in bytes.</td></tr>
+      <tr><td>Identification</td><td>2 bytes</td><td>Used for fragmentation. Just carry through.</td></tr>
+      <tr><td>Flags + Frag Offset</td><td>2 bytes</td><td>3 flag bits + 13-bit offset. We assume no fragmentation.</td></tr>
+      <tr><td>TTL</td><td>1 byte</td><td>Hop count.</td></tr>
+      <tr><td>Protocol</td><td>1 byte</td><td>6 = TCP, 17 = UDP, 1 = ICMP.</td></tr>
+      <tr><td>Checksum</td><td>2 bytes</td><td>One's-complement over the <strong>header only</strong>. Verify it.</td></tr>
+      <tr><td>Source IP</td><td>4 bytes</td><td></td></tr>
+      <tr><td>Destination IP</td><td>4 bytes</td><td></td></tr>
+      <tr><td>Options</td><td>(IHL−5)×4 bytes</td><td>Skip; just compute the payload offset.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Why parse before we can checksum-verify?</h3>
+  <p>A real implementation parses, then verifies the checksum, then trusts the parsed values. For now, <strong>parse all fields including the checksum byte-for-byte</strong>, and add a <code>Verify()</code> method or function that recomputes and compares.</p>
+  <div class="callout callout--note">
+    <span class="callout-title">Checksum comes next lesson</span>
+    <p>We'll wire up the actual checksum function in Lesson 03. For this lesson, store the on-wire checksum in the struct but <strong>don't validate it yet</strong> — we have no checksum implementation.</p>
+  </div>
+
+  <h3>Go's <code>net/netip</code> package</h3>
+  <p>Use <code>net/netip.Addr</code> (not the older <code>net.IP</code>) for the source and destination. It's value-typed, comparable, and avoids the allocation patterns of <code>net.IP</code>. <code>netip.AddrFrom4([4]byte{...})</code> is the constructor.</p>
+
+  <h2>What to implement</h2>
+
+  <h3><code>internal/ipv4/header.go</code></h3>
+  <div class="code" data-lang="go">
+    <div class="code-bar"><span class="code-lang">go</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>package ipv4
+
+// Header is a parsed IPv4 header. All multi-byte fields are stored in host byte order.
+type Header struct {
+    // your fields — match the wire layout above, plus a Checksum field
+    // that holds the on-wire value (do not validate yet).
+}
+
+// HeaderMinLen is the minimum IPv4 header size in bytes.
+const HeaderMinLen = 20
+
+// Protocol numbers commonly seen on the wire.
+const (
+    ProtoICMP = 1
+    ProtoTCP  = 6
+    ProtoUDP  = 17
+)
+
+// Parse decodes an IPv4 header at the start of b and returns the header plus
+// the slice of b after the header (the payload). It returns an error if b is
+// too short, the version isn't 4, or IHL points past len(b).
+func Parse(b []byte) (Header, []byte, error)</code></pre>
+  </div>
+
+  <p>You may also add:</p>
+  <ul>
+    <li><code>func (h Header) PayloadLen() int</code> — convenience: <code>TotalLength - HeaderLen()</code>.</li>
+    <li><code>func (h Header) HeaderLen() int</code> — <code>IHL * 4</code>.</li>
+  </ul>
+
+  <p>Use sentinel errors:</p>
+  <div class="code" data-lang="go">
+    <div class="code-bar"><span class="code-lang">go</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>var (
+    ErrTooShort       = errors.New("ipv4: buffer too short")
+    ErrBadVersion     = errors.New("ipv4: not IPv4")
+    ErrInvalidIHL     = errors.New("ipv4: IHL extends past buffer")
+)</code></pre>
+  </div>
+
+  <h3><code>internal/ipv4/header_test.go</code></h3>
+  <p>Table-driven tests using the golden fixtures shipped in <code>testdata/</code>:</p>
+  <ul>
+    <li><code>testdata/ipv4-basic.hex</code> — a known-good IPv4 packet (header + payload). The accompanying <code>.md</code> file documents every field's expected value.</li>
+    <li><code>testdata/icmp-echo.hex</code> — an ICMP echo request packet for variety.</li>
+  </ul>
+  <p>Read the hex with <code>os.ReadFile</code> + <code>hex.DecodeString</code> (strip whitespace and newlines first). Assert each field matches the documented values, payload length is correct, and the returned payload byte slice starts where IHL says it does.</p>
+  <p>Also add at least these failure cases:</p>
+  <ul>
+    <li><code>Parse(nil)</code> returns <code>ErrTooShort</code>.</li>
+    <li><code>Parse(make([]byte, 19))</code> returns <code>ErrTooShort</code>.</li>
+    <li>A buffer with version=6 returns <code>ErrBadVersion</code>.</li>
+    <li>A buffer with <code>IHL=15</code> but only 20 bytes long returns <code>ErrInvalidIHL</code>.</li>
+  </ul>
+
+  <h2>How to test it yourself</h2>
+  <div class="code" data-lang="bash">
+    <div class="code-bar"><span class="code-lang">bash</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>go test ./internal/ipv4/... -v</code></pre>
+  </div>
+  <p>You should see every table case and failure case pass.</p>
+
+  <div class="donewhen">
+    <h2>Done when</h2>
+    <ul>
+      <li><code>Parse</code> decodes both shipped fixtures correctly.</li>
+      <li>All four failure cases return the right sentinel errors.</li>
+      <li><code>go vet ./internal/ipv4/...</code> is clean.</li>
+      <li>The package imports nothing from <code>os</code>/<code>net</code>/<code>syscall</code> — it's a pure bytes package. (<code>net/netip</code> is fine; that's pure.)</li>
+    </ul>
+  </div>
+
+  <details class="hints">
+    <summary>Stuck? Reveal hints (they escalate)</summary>
+    <ol>
+      <li>Start with the wire layout (RFC 791 §3.1). The first byte holds two nibbles: version (high) and IHL (low). Mask + shift to extract them.</li>
+      <li>Total Length and the other 16-bit fields are big-endian (network byte order). <code>encoding/binary.BigEndian.Uint16(b[i:i+2])</code> is your friend.</li>
+      <li>Don't try to parse options yet — skip them. Just trust IHL: header is <code>IHL * 4</code> bytes, payload starts there. We'll come back to options if we ever need them (we won't).</li>
+      <li>Common bug: not validating <code>len(b) >= 20</code>. The minimum IPv4 header is 20 bytes; anything less is malformed. Return a sentinel error.</li>
+      <li>Common bug: forgetting that IHL is in 32-bit words, not bytes. IHL=5 means 20-byte header.</li>
+    </ol>
+  </details>
+
+  <div class="review-cta">Run <code>/review</code>.</div>
+</article>
+</main>
+
+<nav class="lesson-nav">
+  <a class="prev" href="01-tun-device.html"><span class="dir">← Prev</span><span class="ttl">01 · Opening a TUN device</span></a>
+  <a class="next" href="03-checksum.html"><span class="dir">Next →</span><span class="ttl">03 · The Internet checksum</span></a>
+</nav>
+
+<footer class="site">TCP From Scratch · build a TCP/IP stack in Go, one lesson at a time</footer>
+
+<script src="assets/lesson.js"></script>
+</body>
+</html>

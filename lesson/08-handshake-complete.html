@@ -1,0 +1,183 @@
+<!--lesson-meta
+id: "08"
+title: Completing the handshake
+requires:
+  files:
+    - internal/tcp/listener.go
+  symbols:
+    - { pkg: ./internal/tcp, name: Conn.State }
+  lints:
+    - cmd-builds
+  integration: scripts/check-L08.sh
+hints:
+  - "In SYN-RECEIVED, the segment you're waiting for is an ACK whose ack number equals SND.NXT (your ISS+1). When it arrives, advance SND.UNA and transition to ESTABLISHED. RFC 793 §3.4 / §3.9 'SEGMENT ARRIVES'."
+  - "While in SYN-RECEIVED, drop (or RST) any non-ACK segment. Don't transition on a stray SYN retransmit — just resend your SYN/ACK if you get a duplicate SYN."
+  - "Accept should return the Conn only once it reaches ESTABLISHED. Use a channel: when the read loop moves a Conn to ESTABLISHED, push it onto the accept channel."
+  - "Common bug: not validating the incoming ACK number. If you blindly go to ESTABLISHED on any ACK, you'll accept bogus connections. Check seg.ack == SND.NXT."
+  - "Common bug: a race between the read-loop goroutine moving to ESTABLISHED and Accept reading the Conn. Make sure the state transition and the channel push are ordered correctly under your mutex."
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 08 — Completing the handshake · TCP From Scratch</title>
+<link rel="stylesheet" href="assets/lesson.css">
+<script>(function(){try{var t=localStorage.getItem("tcpfs-theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">TCP From Scratch</a>
+  <div class="topbar-right">
+    <span class="lesson-counter">Lesson 08 / 14</span>
+    <button class="theme-toggle" type="button" aria-label="Toggle theme">🌙</button>
+  </div>
+</header>
+<div class="progress-rail"><div class="progress-fill"></div></div>
+
+<main class="lesson">
+<article>
+  <p class="eyebrow">Lesson 08 · The handshake &amp; data flow</p>
+  <h1>Completing the handshake</h1>
+  <p class="lead">You sent a SYN/ACK in Lesson 07. Now you'll handle the client's final ACK and reach <strong>ESTABLISHED</strong> — a fully open TCP connection. <code>Accept()</code> will return a usable <code>Conn</code>.</p>
+
+  <h2>Background</h2>
+
+  <h3>The third leg</h3>
+  <figure class="diagram">
+<pre class="ascii">   client                          your stack
+     |                                  |
+     |------------- SYN --------------&gt;|   (L07: you received this)
+     |&lt;--------- SYN/ACK ---------------|   (L07: you sent this)
+     |------------- ACK --------------&gt;|   (L08: handle this → ESTABLISHED)
+     |                                  |
+     |======== connection open ========|</pre>
+    <figcaption>The third leg of the 3-way handshake: the client's bare ACK drives your stack into ESTABLISHED.</figcaption>
+  </figure>
+
+  <p>The client's final ACK has:</p>
+  <ul>
+    <li><code>seq = client_ISS + 1</code> (= your RCV.NXT, since you already counted their SYN)</li>
+    <li><code>ack = your_ISS + 1</code> (= your SND.NXT)</li>
+    <li>flags = <code>ACK</code> only (no SYN)</li>
+  </ul>
+
+  <h3>State transition (RFC 793 §3.9, "SYN-RECEIVED STATE")</h3>
+  <p>When a segment arrives while in SYN-RECEIVED:</p>
+  <ol>
+    <li><strong>Check the sequence number</strong> is acceptable (it should equal RCV.NXT — no data yet).</li>
+    <li><strong>If RST</strong>: drop the connection.</li>
+    <li><strong>If SYN</strong> (a retransmit): you can resend your SYN/ACK, or ignore. Don't transition.</li>
+    <li><strong>If ACK</strong>:
+      <ul>
+        <li>If <code>seg.ack == SND.NXT</code> (your ISS+1): the handshake completed. Set <code>SND.UNA = seg.ack</code>, transition to <strong>ESTABLISHED</strong>.</li>
+        <li>Otherwise: the ACK is unacceptable — drop (or RST).</li>
+      </ul>
+    </li>
+    <li>Now in ESTABLISHED, this same ACK might also carry data (in general). For this lesson the final ACK carries no data, so don't worry about it yet — Lesson 09 handles data.</li>
+  </ol>
+
+  <div class="callout callout--bug">
+    <span class="callout-title">Common bug</span>
+    <p>Don't blindly go to ESTABLISHED on any ACK. If you skip the <code>seg.ack == SND.NXT</code> check, you'll accept bogus connections. Validate the incoming ACK number before transitioning.</p>
+  </div>
+
+  <h3>Wiring Accept</h3>
+  <p>The read-loop goroutine is the one that processes the final ACK and flips the state. <code>Accept()</code> is blocked in the user's goroutine. Connect them with a channel:</p>
+  <ul>
+    <li>When a Conn transitions to ESTABLISHED, the read loop pushes it onto <code>l.accepted &lt;- conn</code>.</li>
+    <li><code>Accept()</code> does <code>conn := &lt;-l.accepted; return conn, nil</code>.</li>
+  </ul>
+  <p>Guard the state read/write with the listener's mutex so <code>Conn.State()</code> is safe to call from any goroutine.</p>
+
+  <div class="callout callout--bug">
+    <span class="callout-title">Common bug</span>
+    <p>A race between the read-loop goroutine moving to ESTABLISHED and <code>Accept</code> reading the Conn. Make sure the state transition and the channel push are ordered correctly under your mutex.</p>
+  </div>
+
+  <h3><code>Conn.State()</code></h3>
+  <p>Add an accessor:</p>
+  <div class="code" data-lang="go">
+    <div class="code-bar"><span class="code-lang">go</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>// State returns the current connection state (RFC 793).
+func (c *Conn) State() tcb.State</code></pre>
+  </div>
+  <p>This is what the integration check and your tests use to confirm ESTABLISHED.</p>
+
+  <h2>What to implement</h2>
+  <p>Extend <code>internal/tcp/listener.go</code> (and demux as needed):</p>
+  <ol>
+    <li>A handler for segments arriving at a Conn in SYN-RECEIVED:
+      <ul>
+        <li>Validate the ACK.</li>
+        <li>On valid ACK: advance <code>SND.UNA</code>, set state ESTABLISHED, push to the accept channel.</li>
+        <li>On RST: tear down (remove from demux map).</li>
+        <li>On duplicate SYN: optionally resend SYN/ACK.</li>
+      </ul>
+    </li>
+    <li><code>Conn.State() tcb.State</code> accessor (mutex-protected).</li>
+    <li>Make <code>Accept()</code> actually return on ESTABLISHED.</li>
+  </ol>
+
+  <div class="callout callout--note">
+    <span class="callout-title">Why a switch, not a table</span>
+    <p>Keep the per-state handling readable. A <code>switch c.tcb.State</code> dispatching to small unexported methods (<code>handleSynReceived</code>, later <code>handleEstablished</code>, etc.) is the clean shape. Don't build a fancy transition table yet — a switch is fine and matches how RFC 793 §3.9 is written.</p>
+  </div>
+
+  <h2>How to test it yourself</h2>
+  <div class="code" data-lang="bash">
+    <div class="code-bar"><span class="code-lang">bash</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>go build ./...
+sudo ./scripts/net-up.sh
+
+# Throwaway listener main (or the integration script's helper):
+#   l, _ := tcp.Listen(netip.MustParseAddrPort("10.0.0.2:7777"))
+#   c, _ := l.Accept()
+#   log.Println("ESTABLISHED with", c.RemoteAddr(), c.State())
+
+# From the host (the kernel is the client), a full connect:
+nc 10.0.0.2 7777
+# nc should stay connected (no immediate disconnect). Type nothing — just
+# confirm the connection holds open. Ctrl-C to quit.</code></pre>
+  </div>
+  <p>Watch with <code>make tcpdump</code>: you should see S, S., then <code>.</code> (the bare ACK), and then silence (no RST). If you see a RST come back from your stack after the ACK, your validation is rejecting the legitimate ACK.</p>
+
+  <div class="callout callout--warn">
+    <span class="callout-title">Reading the trace</span>
+    <p>A RST emitted after the bare ACK means your validation is rejecting the legitimate ACK — recheck the <code>seg.ack == SND.NXT</code> comparison and your sequence-number bookkeeping.</p>
+  </div>
+
+  <div class="donewhen">
+    <h2>Done when</h2>
+    <ul>
+      <li><code>Conn.State()</code> exists.</li>
+      <li>A full 3-way handshake drives a Conn to ESTABLISHED and <code>Accept()</code> returns it.</li>
+      <li>The integration check <code>scripts/check-L08.sh</code> performs a real connect from the kernel, confirms (via a helper that prints <code>c.State()</code>) the connection reaches ESTABLISHED, and confirms no RST is emitted.</li>
+    </ul>
+  </div>
+
+  <details class="hints">
+    <summary>Stuck? Reveal hints (they escalate)</summary>
+    <ol>
+      <li>In SYN-RECEIVED, the segment you're waiting for is an ACK whose ack number equals SND.NXT (your ISS+1). When it arrives, advance SND.UNA and transition to ESTABLISHED. RFC 793 §3.4 / §3.9 "SEGMENT ARRIVES".</li>
+      <li>While in SYN-RECEIVED, drop (or RST) any non-ACK segment. Don't transition on a stray SYN retransmit — just resend your SYN/ACK if you get a duplicate SYN.</li>
+      <li>Accept should return the Conn only once it reaches ESTABLISHED. Use a channel: when the read loop moves a Conn to ESTABLISHED, push it onto the accept channel.</li>
+      <li>Common bug: not validating the incoming ACK number. If you blindly go to ESTABLISHED on any ACK, you'll accept bogus connections. Check seg.ack == SND.NXT.</li>
+      <li>Common bug: a race between the read-loop goroutine moving to ESTABLISHED and Accept reading the Conn. Make sure the state transition and the channel push are ordered correctly under your mutex.</li>
+    </ol>
+  </details>
+
+  <div class="review-cta">Run <code>/review</code>.</div>
+</article>
+</main>
+
+<nav class="lesson-nav">
+  <a class="prev" href="07-passive-open.html"><span class="dir">← Prev</span><span class="ttl">07 · Passive open</span></a>
+  <a class="next" href="09-receiving-data.html"><span class="dir">Next →</span><span class="ttl">09 · Receiving data + ACKing</span></a>
+</nav>
+
+<footer class="site">TCP From Scratch · build a TCP/IP stack in Go, one lesson at a time</footer>
+
+<script src="assets/lesson.js"></script>
+</body>
+</html>

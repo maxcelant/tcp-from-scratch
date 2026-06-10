@@ -1,0 +1,177 @@
+<!--lesson-meta
+id: "13"
+title: FIN teardown
+requires:
+  files:
+    - internal/tcp/listener.go
+  symbols:
+    - { pkg: ./internal/tcp, name: Conn.Close }
+  lints:
+    - cmd-builds
+  integration: scripts/check-L13.sh
+hints:
+  - "Like SYN, FIN consumes one sequence number. When you send a FIN, SND.NXT advances by 1. When you receive a FIN, RCV.NXT advances by 1 and you ACK it. RFC 793 §3.5."
+  - "Closing side (active close): Conn.Close sends FIN, moves ESTABLISHED → FIN-WAIT-1. On ACK of your FIN → FIN-WAIT-2. On peer's FIN → send ACK → TIME-WAIT. RFC 793 §3.5 figure 13."
+  - "Receiving side (passive close): peer's FIN arrives in ESTABLISHED → ACK it, move to CLOSE-WAIT, surface io.EOF to Conn.Read. When the app calls Close → send FIN → LAST-ACK. On ACK → CLOSED."
+  - "TIME-WAIT should wait 2*MSL before fully closing. MSL is nominally 2 minutes; for testing use 1-2 seconds. Use your Clock from L11 so tests don't actually sleep 4 minutes."
+  - "Common bug: not delivering io.EOF to a blocked Conn.Read when the peer's FIN arrives. Your RecvBuffer.CloseWrite (from L09) is what wakes the reader with EOF."
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 13 — FIN teardown · TCP From Scratch</title>
+<link rel="stylesheet" href="assets/lesson.css">
+<script>(function(){try{var t=localStorage.getItem("tcpfs-theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">TCP From Scratch</a>
+  <div class="topbar-right">
+    <span class="lesson-counter">Lesson 13 / 14</span>
+    <button class="theme-toggle" type="button" aria-label="Toggle theme">🌙</button>
+  </div>
+</header>
+<div class="progress-rail"><div class="progress-fill"></div></div>
+
+<main class="lesson">
+<article>
+  <p class="eyebrow">Lesson 13 · Reliability &amp; teardown</p>
+  <h1>FIN teardown</h1>
+  <p class="lead">A connection that never closes leaks. This lesson implements graceful shutdown: the FIN handshake that closes each direction of the connection independently, walking through FIN-WAIT, CLOSE-WAIT, LAST-ACK, and TIME-WAIT. After this, <code>Conn</code> fully satisfies <code>io.Closer</code> (and is close to a complete <code>net.Conn</code>).</p>
+
+  <h2>Background</h2>
+
+  <h3>FIN consumes a sequence number</h3>
+  <p>Like SYN, a FIN occupies one byte of sequence space. If your last data byte was seq 1000, your FIN is seq 1001, and the peer ACKs 1002. This is why a clean close is "+1" everywhere.</p>
+
+  <h3>The two teardown paths (RFC 793 §3.5)</h3>
+  <p>TCP close is symmetric — each side closes its own direction. Two roles:</p>
+
+  <p><strong>Active close (you call <code>Close()</code> first):</strong></p>
+  <figure class="diagram">
+<pre class="ascii">ESTABLISHED
+   │ app calls Close(): send FIN
+   ▼
+FIN-WAIT-1
+   │ recv ACK of our FIN
+   ▼
+FIN-WAIT-2
+   │ recv peer's FIN: send ACK
+   ▼
+TIME-WAIT
+   │ wait 2*MSL
+   ▼
+CLOSED</pre>
+    <figcaption>Active close path</figcaption>
+  </figure>
+
+  <p><strong>Passive close (peer closes first):</strong></p>
+  <figure class="diagram">
+<pre class="ascii">ESTABLISHED
+   │ recv peer's FIN: send ACK, deliver EOF to Read
+   ▼
+CLOSE-WAIT
+   │ app calls Close(): send FIN
+   ▼
+LAST-ACK
+   │ recv ACK of our FIN
+   ▼
+CLOSED</pre>
+    <figcaption>Passive close path</figcaption>
+  </figure>
+
+  <p>(There's also a simultaneous-close path through CLOSING — implement it if you like, but the integration test uses the two common paths above.)</p>
+
+  <h3>TIME-WAIT</h3>
+  <p>After the active closer sends the final ACK, it waits <strong>2×MSL</strong> (Maximum Segment Lifetime) before truly closing, in case that ACK was lost and the peer retransmits its FIN. MSL is nominally 2 minutes (so TIME-WAIT is ~4 minutes on real systems). <strong>For testing, use 1–2 seconds</strong> — and use the <code>Clock</code> interface from Lesson 11 so unit tests can advance time instantly instead of sleeping.</p>
+
+  <h3>Delivering EOF</h3>
+  <p>When the peer's FIN arrives, the receive direction is done. A <code>Conn.Read</code> blocked waiting for data must return <code>io.EOF</code>. Your <code>RecvBuffer.CloseWrite()</code> (defined in L09) marks the buffer closed; the next drained <code>Read</code> returns <code>io.EOF</code>. Wire the FIN handler to call it.</p>
+
+  <div class="callout callout--bug">
+    <span class="callout-title">Common bug</span>
+    <p>Not delivering <code>io.EOF</code> to a blocked <code>Conn.Read</code> when the peer's FIN arrives. Your <code>RecvBuffer.CloseWrite()</code> (from L09) is what wakes the reader with EOF.</p>
+  </div>
+
+  <h2>What to implement</h2>
+  <p>Extend <code>internal/tcp/listener.go</code> (and the shared segment handlers):</p>
+
+  <ol>
+    <li><strong><code>Conn.Close()</code></strong> (<code>io.Closer</code>):
+      <ul>
+        <li>From ESTABLISHED: send FIN (seq = SND.NXT, which then advances by 1), go to FIN-WAIT-1.</li>
+        <li>From CLOSE-WAIT: send FIN, go to LAST-ACK.</li>
+        <li>Idempotent: calling Close twice shouldn't double-send.</li>
+      </ul>
+    </li>
+    <li><strong>Incoming FIN handling</strong> in each relevant state:
+      <ul>
+        <li>ESTABLISHED + FIN: ACK it (RCV.NXT += 1), CloseWrite the recv buffer (EOF), go to CLOSE-WAIT.</li>
+        <li>FIN-WAIT-1 + ACK-of-our-FIN: go to FIN-WAIT-2.</li>
+        <li>FIN-WAIT-2 + peer FIN: ACK, go to TIME-WAIT, start the 2*MSL timer.</li>
+        <li>LAST-ACK + ACK-of-our-FIN: go to CLOSED, remove from demux.</li>
+        <li>TIME-WAIT timer expiry: go to CLOSED, remove from demux.</li>
+      </ul>
+    </li>
+    <li><strong>TIME-WAIT timer</strong> using the L11 Clock.</li>
+  </ol>
+
+  <p>Keep using the per-state switch/dispatch shape. The state machine is now substantial — this is a good moment to make sure each state's handler is a small, named, readable method.</p>
+
+  <h2>How to test it yourself</h2>
+  <div class="code" data-lang="bash">
+    <div class="code-bar"><span class="code-lang">bash</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>go build ./...
+sudo ./scripts/net-up.sh
+sudo ./tcp-echo &amp;
+
+# nc closes its side after sending; your echo server should see EOF, echo
+# remaining data, and close cleanly.
+echo "bye" | nc -q1 10.0.0.2 7777
+# Expect: "bye" echoed back, then clean FIN exchange.</code></pre>
+  </div>
+
+  <p>In <code>make tcpdump</code> you should see a clean teardown: <code>F.</code> (FIN/ACK) from one side, <code>.</code> (ACK), <code>F.</code> from the other, <code>.</code> — and crucially <strong>no RST</strong>. A RST during teardown means a state-machine bug.</p>
+
+  <div class="callout callout--warn">
+    <span class="callout-title">Watch for RST</span>
+    <p>A RST during teardown means a state-machine bug. A clean exchange is <code>F.</code> from one side, <code>.</code>, <code>F.</code> from the other, <code>.</code> — never a reset.</p>
+  </div>
+
+  <div class="donewhen">
+    <h2>Done when</h2>
+    <ul>
+      <li><code>Conn.Close()</code> implements <code>io.Closer</code> and drives the active-close path to TIME-WAIT → CLOSED.</li>
+      <li>Incoming FIN drives the passive-close path and delivers <code>io.EOF</code> to <code>Conn.Read</code>.</li>
+      <li>TIME-WAIT uses the Clock (no 4-minute real sleeps in tests).</li>
+      <li>The integration check <code>scripts/check-L13.sh</code> runs a connection that the client closes (<code>nc -q1</code>) and confirms a clean FIN exchange (FIN from both sides, no RST).</li>
+    </ul>
+  </div>
+
+  <details class="hints">
+    <summary>Stuck? Reveal hints (they escalate)</summary>
+    <ol>
+      <li>Like SYN, FIN consumes one sequence number. When you send a FIN, SND.NXT advances by 1. When you receive a FIN, RCV.NXT advances by 1 and you ACK it. RFC 793 §3.5.</li>
+      <li>Closing side (active close): Conn.Close sends FIN, moves ESTABLISHED → FIN-WAIT-1. On ACK of your FIN → FIN-WAIT-2. On peer's FIN → send ACK → TIME-WAIT. RFC 793 §3.5 figure 13.</li>
+      <li>Receiving side (passive close): peer's FIN arrives in ESTABLISHED → ACK it, move to CLOSE-WAIT, surface io.EOF to Conn.Read. When the app calls Close → send FIN → LAST-ACK. On ACK → CLOSED.</li>
+      <li>TIME-WAIT should wait 2*MSL before fully closing. MSL is nominally 2 minutes; for testing use 1-2 seconds. Use your Clock from L11 so tests don't actually sleep 4 minutes.</li>
+      <li>Common bug: not delivering io.EOF to a blocked Conn.Read when the peer's FIN arrives. Your RecvBuffer.CloseWrite (from L09) is what wakes the reader with EOF.</li>
+    </ol>
+  </details>
+
+  <div class="review-cta">Run <code>/review</code>.</div>
+</article>
+</main>
+
+<nav class="lesson-nav">
+  <a class="prev" href="12-active-open.html"><span class="dir">← Prev</span><span class="ttl">12 · Active open (client)</span></a>
+  <a class="next" href="14-capstone.html"><span class="dir">Next →</span><span class="ttl">14 · Capstone: HTTP/1.0</span></a>
+</nav>
+
+<footer class="site">TCP From Scratch · build a TCP/IP stack in Go, one lesson at a time</footer>
+
+<script src="assets/lesson.js"></script>
+</body>
+</html>

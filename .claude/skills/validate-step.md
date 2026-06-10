@@ -30,9 +30,9 @@ This skill has **two gates**. Gate 1 is mechanical (does the code do what the le
 
 1. **Read `.progress`.** It has one line: `current: NN`. Read `NN`.
 
-2. **Find the lesson file.** `ls lesson/NN-*.md`. If missing, tell the user `.progress` is corrupted and stop.
+2. **Find the lesson file.** `ls lesson/NN-*.html`. If missing, tell the user `.progress` is corrupted and stop.
 
-3. **Parse the lesson's YAML frontmatter.** The block between the two `---` lines at the top of the file. You need the `requires:` block, which may contain any of:
+3. **Parse the lesson's YAML metadata.** Each lesson is an HTML file whose metadata lives in a YAML block inside a leading HTML comment at the very top, delimited by `<!--lesson-meta` and `-->`. Parse that YAML. You need the `requires:` block, which may contain any of:
    - `files: [path1, path2, ...]` — must exist on disk
    - `symbols: [{pkg: ..., name: ...}, ...]` — must be discoverable via `go doc`
    - `tests: [pattern1, ...]` — passed to `go test`
@@ -81,7 +81,7 @@ This skill has **two gates**. Gate 1 is mechanical (does the code do what the le
 
 You only reach this gate when every Gate 1 check is green. Now confirm the learner actually understood the lesson, not just satisfied the test harness.
 
-1. **Read the full lesson body** (`lesson/NN-*.md`, below the frontmatter). Identify the **2-4 most important key takeaways** — the concepts the lesson exists to teach. Favor:
+1. **Read the full lesson body** (`lesson/NN-*.html`, below the `<!--lesson-meta-->` comment). It's HTML — read the prose, headings, callouts, and diagrams; ignore the tags and the `<!--lesson-meta-->` block. Identify the **2-4 most important key takeaways** — the concepts the lesson exists to teach. Favor:
    - the "why" behind a design choice the lesson forced (e.g. why the TCB holds no I/O, why sequence numbers wrap, why the checksum covers a pseudo-header),
    - protocol invariants and edge cases the code had to handle,
    - distinctions the lesson explicitly drew (e.g. SYN vs SYN-ACK, MSS vs window, ACK number semantics).
@@ -115,9 +115,9 @@ You only reach this gate when every Gate 1 check is green. Now confirm the learn
 Bump `.progress` **only when Gate 1 is fully green AND Gate 2 passed.** Then:
 - Update `.progress` to the next lesson (`current: NN+1`, zero-padded to 2 digits).
 - Reset the hint counter for the next lesson: `rm -f .hint-count` (it's per-lesson).
-- Print: `🎉 Lesson NN validated — checks green, takeaways solid. Next up: lesson/NN+1-<slug>.md — open it when you're ready.`
+- Print: `🎉 Lesson NN validated — checks green, takeaways solid. Next up: lesson/NN+1-<slug>.html — open it when you're ready.`
 
-**If the learner is on lesson 14 and both gates pass**, the final message is: `🏆 You have built TCP — and you can explain it. The capstone is green and you nailed the takeaways. Read lesson/14-capstone.md "After this" for ideas on what to extend.`
+**If the learner is on lesson 14 and both gates pass**, the final message is: `🏆 You have built TCP — and you can explain it. The capstone is green and you nailed the takeaways. Read lesson/14-capstone.html "After this" for ideas on what to extend.`
 
 ## Edge cases
 

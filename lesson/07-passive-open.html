@@ -1,0 +1,198 @@
+<!--lesson-meta
+id: "07"
+title: "Passive open: SYN → SYN/ACK"
+requires:
+  files:
+    - internal/tcp/listener.go
+    - internal/tcp/demux.go
+  symbols:
+    - { pkg: ./internal/tcp, name: Listen }
+    - { pkg: ./internal/tcp, name: Listener }
+    - { pkg: ./internal/tcp, name: Conn }
+  lints:
+    - cmd-builds
+  integration: scripts/check-L07.sh
+hints:
+  - "A connection is identified by its 4-tuple: (local IP, local port, remote IP, remote port). Your demux needs a map keyed by that tuple. `netip.AddrPort` is comparable, so a struct of {local, remote AddrPort} works directly as a map key."
+  - "On receiving a SYN to a listening port with no existing connection: create a TCB, choose ISS (a constant like 0 is fine for now; RFC 6528 wants it randomized but correctness doesn't require it), set RCV.IRS = SYN.seq, RCV.NXT = SYN.seq + 1, move to SYN-RECEIVED, and send SYN/ACK."
+  - "The SYN/ACK's seq = ISS, ack = RCV.NXT (= their seq + 1). SYN consumes one sequence number — that's why ack is seq+1. RFC 793 §3.4."
+  - "Common bug: wrong checksum on the SYN/ACK because the pseudo-header uses the wrong src/dst. Remember you're REPLYING — your src is the original dst, your dst is the original src."
+  - "Common bug: building the IP header with the wrong protocol or total length. The total length must cover IP header + TCP header (with MSS option = 24 bytes) + 0 payload."
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 07 — Passive open · TCP From Scratch</title>
+<link rel="stylesheet" href="assets/lesson.css">
+<script>(function(){try{var t=localStorage.getItem("tcpfs-theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">TCP From Scratch</a>
+  <div class="topbar-right">
+    <span class="lesson-counter">Lesson 07 / 14</span>
+    <button class="theme-toggle" type="button" aria-label="Toggle theme">🌙</button>
+  </div>
+</header>
+<div class="progress-rail"><div class="progress-fill"></div></div>
+
+<main class="lesson">
+<article>
+  <p class="eyebrow">Lesson 07 · The handshake &amp; data flow</p>
+  <h1>Passive open: SYN → SYN/ACK</h1>
+  <p class="lead">Now the layers connect. You'll write the read loop that pulls packets off the TUN device, demultiplexes them to connections by 4-tuple, and — for the first half of the handshake — responds to an incoming SYN with a SYN/ACK.</p>
+
+  <h2>Background</h2>
+
+  <h3>Passive open</h3>
+  <p>A server does a <strong>passive open</strong>: it announces "I'm listening on port X" and waits. When a client's SYN arrives, the server replies with SYN/ACK. This lesson implements the listener side up through sending SYN/ACK. Completing the handshake (the final ACK → ESTABLISHED) is Lesson 08.</p>
+
+  <h3>The read loop and demultiplexing</h3>
+  <p>Your TUN device delivers raw IPv4 packets. For each packet you:</p>
+  <ol>
+    <li>IPv4-parse. If protocol != TCP, drop.</li>
+    <li>TCP-parse the payload.</li>
+    <li>Build the 4-tuple: <code>(dstIP:dstPort, srcIP:srcPort)</code> from the packet's perspective — careful with direction. From <em>your</em> stack's perspective, the local side is the packet's destination and the remote side is the packet's source.</li>
+    <li>Look up the connection in your demux map.
+      <ul>
+        <li><strong>Found</strong>: hand the segment to that connection's state machine.</li>
+        <li><strong>Not found, and it's a SYN to a listening port</strong>: create a new connection in SYN-RECEIVED and reply with SYN/ACK.</li>
+        <li><strong>Not found, not a SYN</strong>: ideally send a RST (you can defer RST to a later lesson; for now, drop).</li>
+      </ul>
+    </li>
+  </ol>
+
+  <h3>The 4-tuple key</h3>
+  <div class="code" data-lang="go">
+    <div class="code-bar"><span class="code-lang">go</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>type connKey struct {
+    local  netip.AddrPort
+    remote netip.AddrPort
+}</code></pre>
+  </div>
+  <p><code>netip.AddrPort</code> is comparable, so <code>connKey</code> works as a map key with no custom hashing.</p>
+
+  <h3>Sending SYN/ACK — the sequence arithmetic</h3>
+  <p>When a SYN arrives with sequence number <code>S</code>:</p>
+  <ul>
+    <li><code>RCV.IRS = S</code></li>
+    <li><code>RCV.NXT = S + 1</code>  (the SYN consumes sequence number S)</li>
+    <li>Choose <code>ISS</code> (initial send sequence). A constant works for now.</li>
+    <li><code>SND.ISS = ISS</code>, <code>SND.UNA = ISS</code>, <code>SND.NXT = ISS + 1</code> (your SYN/ACK's SYN consumes ISS)</li>
+    <li>Send a segment with: <code>seq = ISS</code>, <code>ack = RCV.NXT</code>, flags <code>SYN|ACK</code>, an MSS option (e.g. 1460), window = your RCV.WND.</li>
+    <li>Transition to SYN-RECEIVED.</li>
+  </ul>
+
+  <h3>Designing the API: <code>net.Listener</code> shape</h3>
+  <p>We're aiming for <code>tcp.Conn</code> to eventually satisfy <code>net.Conn</code> and <code>tcp.Listener</code> to satisfy <code>net.Listener</code>. Start shaping toward that now:</p>
+  <div class="code" data-lang="go">
+    <div class="code-bar"><span class="code-lang">go</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>// Listen binds to a local address and returns a Listener. It opens the TUN
+// device internally (or accepts one — your call, but document it).
+func Listen(local netip.AddrPort) (*Listener, error)
+
+// Accept blocks until a connection reaches ESTABLISHED, then returns it.
+// (In this lesson Accept may not return yet — ESTABLISHED is L08. It's fine
+// for Accept to exist and block.)
+func (l *Listener) Accept() (*Conn, error)</code></pre>
+  </div>
+  <p>Internally <code>Listener</code> owns:</p>
+  <ul>
+    <li>the <code>*tun.Device</code>,</li>
+    <li>the demux map (guarded by a mutex — the read loop runs in a goroutine),</li>
+    <li>a channel of newly-established <code>*Conn</code> for <code>Accept</code> to receive from.</li>
+  </ul>
+  <p><code>Conn</code> owns a <code>*tcb.TCB</code> and a way to send segments (it needs access to the device or a send function). Keep the segment-building logic in one place — e.g. an unexported <code>func (c *Conn) sendSegment(flags uint8, payload []byte) error</code>.</p>
+
+  <h3>Goroutine model</h3>
+  <ul>
+    <li>One goroutine runs the read loop: <code>for { read packet; demux; handle }</code>.</li>
+    <li><code>Accept</code> blocks on a channel.</li>
+    <li>The demux map is shared between the read-loop goroutine and (later) <code>Conn.Write</code> calls from the user's goroutine — protect it with a <code>sync.Mutex</code> or <code>sync.RWMutex</code>.</li>
+  </ul>
+  <p>Keep it simple: a single mutex around the whole demux + per-conn state is fine at this scale. Don't build a lock-free anything.</p>
+
+  <div class="callout callout--bug">
+    <span class="callout-title">Common bug</span>
+    <p>Wrong checksum on the SYN/ACK because the pseudo-header uses the wrong src/dst. Remember you're <strong>replying</strong> — your src is the original dst, your dst is the original src.</p>
+  </div>
+
+  <div class="callout callout--bug">
+    <span class="callout-title">Common bug</span>
+    <p>Building the IP header with the wrong protocol or total length. The total length must cover IP header + TCP header (with MSS option = 24 bytes) + 0 payload.</p>
+  </div>
+
+  <h2>What to implement</h2>
+
+  <h3><code>internal/tcp/demux.go</code></h3>
+  <ul>
+    <li><code>connKey</code> type (the 4-tuple).</li>
+    <li>A <code>demux</code> struct (or fields on Listener) holding <code>map[connKey]*Conn</code> + a mutex.</li>
+    <li>A method to find-or-route a parsed segment to a Conn.</li>
+  </ul>
+
+  <h3><code>internal/tcp/listener.go</code></h3>
+  <ul>
+    <li><code>Listen(local netip.AddrPort) (*Listener, error)</code>.</li>
+    <li><code>Listener.Accept() (*Conn, error)</code>.</li>
+    <li><code>Listener.Close() error</code>.</li>
+    <li>The read loop (unexported, started as a goroutine from <code>Listen</code>).</li>
+    <li><code>Conn</code> type with a <code>*tcb.TCB</code> and a <code>sendSegment</code> helper.</li>
+    <li>On SYN to the listening port: create Conn in SYN-RECEIVED, send SYN/ACK.</li>
+  </ul>
+  <p>Recommended: a small <code>func (c *Conn) sendSegment(flags uint8, payload []byte) error</code> that builds the TCP header from the TCB's current seq/ack, marshals TCP + IP, and writes to the device. You'll reuse it everywhere.</p>
+
+  <h2>How to test it yourself</h2>
+  <div class="code" data-lang="bash">
+    <div class="code-bar"><span class="code-lang">bash</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>go build ./...
+sudo ./scripts/net-up.sh
+
+# Start a tiny program that calls tcp.Listen + Accept on 10.0.0.2:7777.
+# (You'll write this as cmd/tcp-echo in L09; for now a 10-line throwaway main
+#  that just Listens is fine, OR rely on the integration script which generates
+#  a listener helper for you. The script connects from the kernel and checks
+#  for a SYN/ACK.)
+
+# From the host (the kernel is the client), attempt a connection. It won't
+# complete yet — no final-ACK handling until L08 — but a SYN/ACK should go out:
+timeout 2 nc 10.0.0.2 7777 &amp;
+sudo tcpdump -ni tun0 'tcp port 7777' -c 4 -v</code></pre>
+  </div>
+  <p>In the tcpdump output you should see: incoming <code>Flags [S]</code> (SYN from <code>10.0.0.1</code>), then your outgoing <code>Flags [S.]</code> (SYN/ACK from <code>10.0.0.2</code>) with the correct ack number (their seq + 1) and a valid checksum (tcpdump prints <code>cksum 0x.... (correct)</code> — if it says <code>incorrect</code>, your pseudo-header is wrong).</p>
+
+  <div class="donewhen">
+    <h2>Done when</h2>
+    <ul>
+      <li><code>tcp.Listen</code>, <code>tcp.Listener</code>, <code>tcp.Conn</code> exist and the package builds.</li>
+      <li>The integration check <code>scripts/check-L07.sh</code> opens a connection from the kernel and confirms a valid SYN/ACK was emitted <strong>and that the kernel ACKed it</strong> (the kernel only ACKs a SYN/ACK whose checksum and ack number are correct — a free end-to-end validation).</li>
+    </ul>
+  </div>
+
+  <details class="hints">
+    <summary>Stuck? Reveal hints (they escalate)</summary>
+    <ol>
+      <li>A connection is identified by its 4-tuple: (local IP, local port, remote IP, remote port). Your demux needs a map keyed by that tuple. <code>netip.AddrPort</code> is comparable, so a struct of {local, remote AddrPort} works directly as a map key.</li>
+      <li>On receiving a SYN to a listening port with no existing connection: create a TCB, choose ISS (a constant like 0 is fine for now; RFC 6528 wants it randomized but correctness doesn't require it), set RCV.IRS = SYN.seq, RCV.NXT = SYN.seq + 1, move to SYN-RECEIVED, and send SYN/ACK.</li>
+      <li>The SYN/ACK's seq = ISS, ack = RCV.NXT (= their seq + 1). SYN consumes one sequence number — that's why ack is seq+1. RFC 793 §3.4.</li>
+      <li>Common bug: wrong checksum on the SYN/ACK because the pseudo-header uses the wrong src/dst. Remember you're REPLYING — your src is the original dst, your dst is the original src.</li>
+      <li>Common bug: building the IP header with the wrong protocol or total length. The total length must cover IP header + TCP header (with MSS option = 24 bytes) + 0 payload.</li>
+    </ol>
+  </details>
+
+  <div class="review-cta">Run <code>/review</code>.</div>
+</article>
+</main>
+
+<nav class="lesson-nav">
+  <a class="prev" href="06-tcb-state-machine.html"><span class="dir">← Prev</span><span class="ttl">06 · TCB &amp; state machine</span></a>
+  <a class="next" href="08-handshake-complete.html"><span class="dir">Next →</span><span class="ttl">08 · Completing the handshake</span></a>
+</nav>
+
+<footer class="site">TCP From Scratch · build a TCP/IP stack in Go, one lesson at a time</footer>
+
+<script src="assets/lesson.js"></script>
+</body>
+</html>

@@ -1,0 +1,243 @@
+<!--lesson-meta
+id: "05"
+title: TCP header parse/serialize
+requires:
+  files:
+    - internal/tcp/header.go
+    - internal/tcp/header_test.go
+  symbols:
+    - { pkg: ./internal/tcp, name: Header }
+    - { pkg: ./internal/tcp, name: Parse }
+    - { pkg: ./internal/tcp, name: Header.Marshal }
+  tests:
+    - ./internal/tcp/...
+hints:
+  - "TCP header is 20 bytes minimum (RFC 793 §3.1), same as IPv4. The Data Offset field (top nibble of byte 12) is the header length in 32-bit words — exactly like IPv4's IHL. Options live between byte 20 and DataOffset*4."
+  - "The flags are the low 6 bits of byte 13: URG, ACK, PSH, RST, SYN, FIN from high to low. Define them as named bit constants and store a single `Flags uint8` field, or store individual bools — your choice, but bit constants are cleaner and match the wire."
+  - "The checksum covers a *pseudo-header* (src IP, dst IP, zero byte, protocol=6, TCP length) PLUS the TCP header PLUS the TCP payload. RFC 793 §3.1 'Checksum'. This is the single most common place to get TCP wrong."
+  - "The MSS option is kind=2, length=4, then a 2-byte value. Options are a TLV list terminated by kind=0 (End of Option List) or padded with kind=1 (No-Op). For now you only need to parse/emit MSS; skip unknown options by honoring their length byte."
+  - "Common bug: computing the TCP checksum over only the TCP segment and forgetting the pseudo-header. If your SYN/ACK gets silently dropped in L07, this is why."
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 05 — TCP header parse/serialize · TCP From Scratch</title>
+<link rel="stylesheet" href="assets/lesson.css">
+<script>(function(){try{var t=localStorage.getItem("tcpfs-theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">TCP From Scratch</a>
+  <div class="topbar-right">
+    <span class="lesson-counter">Lesson 05 / 14</span>
+    <button class="theme-toggle" type="button" aria-label="Toggle theme">🌙</button>
+  </div>
+</header>
+<div class="progress-rail"><div class="progress-fill"></div></div>
+
+<main class="lesson">
+<article>
+  <p class="eyebrow">Lesson 05 · TCP fundamentals</p>
+  <h1>TCP header parse/serialize</h1>
+  <p class="lead">Now the main event. You'll write a TCP header parser and serializer — including the MSS option and the all-important pseudo-header checksum. Pure bytes work like Lessons 02–04, but TCP's checksum has a twist that trips everyone up the first time.</p>
+
+  <h2>Background</h2>
+
+  <h3>The TCP header <span class="pill">RFC 793 §3.1</span></h3>
+  <p>Every row is 32 bits wide. The 20-byte minimum carries no options.</p>
+
+  <div class="bytemap">
+    <div class="bytemap-ruler">
+      <span>0</span><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>10</span><span>11</span><span>12</span><span>13</span><span>14</span><span>15</span><span>16</span><span>17</span><span>18</span><span>19</span><span>20</span><span>21</span><span>22</span><span>23</span><span>24</span><span>25</span><span>26</span><span>27</span><span>28</span><span>29</span><span>30</span><span>31</span>
+    </div>
+    <div class="bytemap-rows">
+      <div class="field b-blue"   style="--bits:16"><span class="fname">Source Port</span><span class="fbits">2 bytes</span></div>
+      <div class="field b-violet" style="--bits:16"><span class="fname">Destination Port</span><span class="fbits">2 bytes</span></div>
+
+      <div class="field b-green"  style="--bits:32"><span class="fname">Sequence Number</span><span class="fbits">4 bytes</span></div>
+      <div class="field b-amber"  style="--bits:32"><span class="fname">Acknowledgment Number</span><span class="fbits">4 bytes · valid if ACK</span></div>
+
+      <div class="field b-cyan"   style="--bits:4"><span class="fname">Data Off.</span><span class="fbits">4 b · words</span></div>
+      <div class="field b-slate dim" style="--bits:6"><span class="fname">Reserved</span><span class="fbits">6 b</span></div>
+      <div class="field b-rose"   style="--bits:6"><span class="fname">Flags</span><span class="fbits">URG ACK PSH RST SYN FIN</span></div>
+      <div class="field b-blue"   style="--bits:16"><span class="fname">Window</span><span class="fbits">2 bytes</span></div>
+
+      <div class="field b-rose"   style="--bits:16"><span class="fname">Checksum</span><span class="fbits">2 bytes</span></div>
+      <div class="field b-slate dim" style="--bits:16"><span class="fname">Urgent Pointer</span><span class="fbits">2 b · ignored</span></div>
+
+      <div class="field b-violet dim" style="--bits:32"><span class="fname">Options (MSS …) + Padding</span><span class="fbits">present when Data Offset &gt; 5</span></div>
+      <div class="field b-green dim" style="--bits:32"><span class="fname">data</span><span class="fbits">payload</span></div>
+    </div>
+    <div class="bytemap-caption">Data Offset is the header length in 32-bit words — exactly like IPv4's IHL. Options live between byte 20 and <code>DataOffset×4</code>.</div>
+  </div>
+
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Field</th><th>Size</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td>Source Port</td><td>2 bytes</td><td>big-endian</td></tr>
+      <tr><td>Dest Port</td><td>2 bytes</td><td></td></tr>
+      <tr><td>Sequence Number</td><td>4 bytes</td><td>byte position of first data octet in this segment</td></tr>
+      <tr><td>Ack Number</td><td>4 bytes</td><td>next seq the sender expects (valid only if ACK set)</td></tr>
+      <tr><td>Data Offset</td><td>4 bits</td><td>header length in 32-bit words; min 5</td></tr>
+      <tr><td>Reserved</td><td>6 bits</td><td>zero</td></tr>
+      <tr><td>Flags</td><td>6 bits</td><td>URG ACK PSH RST SYN FIN</td></tr>
+      <tr><td>Window</td><td>2 bytes</td><td>receive window size</td></tr>
+      <tr><td>Checksum</td><td>2 bytes</td><td>pseudo-header + header + data</td></tr>
+      <tr><td>Urgent Pointer</td><td>2 bytes</td><td>only if URG; we ignore</td></tr>
+      <tr><td>Options</td><td>variable</td><td>MSS, window scale, SACK, timestamps… we only do MSS</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>The flags</h3>
+  <p>The low 6 bits of byte 13. Define these as constants and store a single <code>Flags uint8</code> on your Header — it maps cleanly to the wire and tests like <code>h.Flags&amp;SYN != 0</code> read well.</p>
+  <div class="flag-row">
+    <span class="flag"><b>URG</b> = 0x20</span>
+    <span class="flag"><b>ACK</b> = 0x10</span>
+    <span class="flag"><b>PSH</b> = 0x08</span>
+    <span class="flag"><b>RST</b> = 0x04</span>
+    <span class="flag"><b>SYN</b> = 0x02</span>
+    <span class="flag"><b>FIN</b> = 0x01</span>
+  </div>
+
+  <h3>The pseudo-header checksum (the twist)</h3>
+  <p>TCP's checksum doesn't just cover the TCP segment. It covers a <strong>pseudo-header</strong> built from fields in the IPv4 header, concatenated (conceptually) in front of the TCP segment:</p>
+
+  <div class="bytemap">
+    <div class="bytemap-ruler">
+      <span>0</span><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>10</span><span>11</span><span>12</span><span>13</span><span>14</span><span>15</span><span>16</span><span>17</span><span>18</span><span>19</span><span>20</span><span>21</span><span>22</span><span>23</span><span>24</span><span>25</span><span>26</span><span>27</span><span>28</span><span>29</span><span>30</span><span>31</span>
+    </div>
+    <div class="bytemap-rows">
+      <div class="field b-blue"   style="--bits:32"><span class="fname">Source Address</span><span class="fbits">4 bytes · from IP header</span></div>
+      <div class="field b-violet" style="--bits:32"><span class="fname">Destination Address</span><span class="fbits">4 bytes · from IP header</span></div>
+      <div class="field b-slate"  style="--bits:8"><span class="fname">zero</span><span class="fbits">1 byte</span></div>
+      <div class="field b-green"  style="--bits:8"><span class="fname">PTCL</span><span class="fbits">1 byte · =6</span></div>
+      <div class="field b-amber"  style="--bits:16"><span class="fname">TCP Length</span><span class="fbits">2 bytes</span></div>
+    </div>
+    <div class="bytemap-caption">The 12-byte pseudo-header. <code>PTCL</code> = 6 (TCP). <code>TCP Length</code> = TCP header + payload (not the pseudo-header, not the IP header).</div>
+  </div>
+
+  <p>To compute the checksum:</p>
+  <ol>
+    <li>Build the 12-byte pseudo-header.</li>
+    <li>Concatenate: pseudo-header + TCP header (with checksum field zeroed) + TCP payload.</li>
+    <li>If the total is odd, the checksum routine pads with a zero byte (your <code>checksum.Sum</code> already handles odd lengths).</li>
+    <li>Run <code>checksum.Sum</code> over the whole thing.</li>
+    <li>Write the result into the TCP checksum field.</li>
+  </ol>
+
+  <div class="callout callout--note">
+    <span class="callout-title">Why a pseudo-header?</span>
+    <p>It lets TCP detect misrouted/corrupted packets where the IP addresses got mangled. The TCP checksum effectively cross-checks the IP layer. This means <code>Marshal</code> needs to know the source and destination IPs — they're not in the TCP header itself. Design your API to accept them.</p>
+  </div>
+
+  <h3>Sequence number arithmetic</h3>
+  <p>Sequence and ack numbers are <code>uint32</code> and <strong>wrap around</strong> (mod 2³²). You'll do a lot of <code>seq + len</code> arithmetic in later lessons. For now just store them as <code>uint32</code>; Go's unsigned arithmetic wraps correctly by default.</p>
+
+  <h2>What to implement</h2>
+
+  <h3><code>internal/tcp/header.go</code></h3>
+  <div class="code" data-lang="go">
+    <div class="code-bar"><span class="code-lang">go</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>package tcp
+
+const (
+    FlagFIN = 1 &lt;&lt; 0
+    FlagSYN = 1 &lt;&lt; 1
+    FlagRST = 1 &lt;&lt; 2
+    FlagPSH = 1 &lt;&lt; 3
+    FlagACK = 1 &lt;&lt; 4
+    FlagURG = 1 &lt;&lt; 5
+)
+
+const HeaderMinLen = 20
+
+// Header is a parsed TCP header. Multi-byte fields are host byte order.
+type Header struct {
+    SrcPort, DstPort uint16
+    SeqNum, AckNum   uint32
+    DataOffset       uint8  // in 32-bit words
+    Flags            uint8
+    Window           uint16
+    Checksum         uint16 // on-wire value
+    Urgent           uint16
+    MSS              uint16 // 0 if no MSS option present
+    // (you may store raw options too, but MSS is all we use)
+}
+
+// Parse decodes a TCP header at the start of b. Returns the header and the
+// payload (bytes after the header per DataOffset). Errors on short buffers
+// or a DataOffset that points past len(b).
+func Parse(b []byte) (Header, []byte, error)
+
+// Marshal writes the TCP header + the given payload into dst, computing the
+// checksum using the pseudo-header derived from src and dst IPs. Returns the
+// total number of bytes written (header + payload).
+//
+// src and dst are the IPv4 addresses that WILL be used in the enclosing IP
+// header — they're needed for the pseudo-header checksum.
+func (h Header) Marshal(dst []byte, srcIP, dstIP netip.Addr, payload []byte) (int, error)</code></pre>
+  </div>
+
+  <p>Design notes:</p>
+  <ul>
+    <li>Put the MSS option emission logic inside Marshal: if <code>h.MSS != 0</code>, emit a kind=2/len=4 option and set DataOffset to 6 (24-byte header). Otherwise DataOffset=5.</li>
+    <li>Provide a helper for the pseudo-header checksum. It can be unexported (<code>func pseudoHeaderChecksum(...)</code>), but consider exposing <code>func Checksum(srcIP, dstIP netip.Addr, segment []byte) uint16</code> so tests can call it directly.</li>
+  </ul>
+
+  <h3><code>internal/tcp/header_test.go</code></h3>
+  <ul>
+    <li>Round-trip a real SYN: read <code>testdata/syn.hex</code>, IPv4-parse to get the TCP segment + the src/dst IPs, <code>tcp.Parse</code> it, assert fields (ports, seq, flags=SYN, MSS option value). Document expected values come from <code>testdata/syn.hex.md</code>.</li>
+    <li>Round-trip a real SYN/ACK: <code>testdata/synack.hex</code>. Assert flags = SYN|ACK and the ack number.</li>
+    <li>Checksum verification: take the real SYN segment + its pseudo-header and assert <code>checksum.Verify</code> over (pseudo-header || segment) is true.</li>
+    <li>Marshal a SYN you construct, then Parse it back, and assert your computed checksum verifies.</li>
+  </ul>
+
+  <h2>How to test it yourself</h2>
+  <div class="code" data-lang="bash">
+    <div class="code-bar"><span class="code-lang">bash</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>go test ./internal/tcp/... -v</code></pre>
+  </div>
+  <div class="callout callout--warn">
+    <span class="callout-title">Catch checksum bugs here</span>
+    <p>The most valuable assertion is the checksum one. If your Marshal produces a segment whose checksum doesn't verify, you will spend all of Lesson 07 confused — catch it here.</p>
+  </div>
+
+  <div class="donewhen">
+    <h2>Done when</h2>
+    <ul>
+      <li><code>Parse</code> correctly decodes <code>testdata/syn.hex</code> and <code>testdata/synack.hex</code> including the MSS option.</li>
+      <li><code>Marshal</code> produces a segment whose pseudo-header checksum verifies.</li>
+      <li>Marshal → Parse round-trips preserve all fields.</li>
+      <li><code>go vet ./internal/tcp/...</code> clean.</li>
+    </ul>
+  </div>
+
+  <details class="hints">
+    <summary>Stuck? Reveal hints (they escalate)</summary>
+    <ol>
+      <li>TCP header is 20 bytes minimum (RFC 793 §3.1), same as IPv4. The Data Offset field (top nibble of byte 12) is the header length in 32-bit words — exactly like IPv4's IHL. Options live between byte 20 and DataOffset*4.</li>
+      <li>The flags are the low 6 bits of byte 13: URG, ACK, PSH, RST, SYN, FIN from high to low. Define them as named bit constants and store a single <code>Flags uint8</code> field, or store individual bools — your choice, but bit constants are cleaner and match the wire.</li>
+      <li>The checksum covers a <em>pseudo-header</em> (src IP, dst IP, zero byte, protocol=6, TCP length) PLUS the TCP header PLUS the TCP payload. RFC 793 §3.1 'Checksum'. This is the single most common place to get TCP wrong.</li>
+      <li>The MSS option is kind=2, length=4, then a 2-byte value. Options are a TLV list terminated by kind=0 (End of Option List) or padded with kind=1 (No-Op). For now you only need to parse/emit MSS; skip unknown options by honoring their length byte.</li>
+      <li>Common bug: computing the TCP checksum over only the TCP segment and forgetting the pseudo-header. If your SYN/ACK gets silently dropped in L07, this is why.</li>
+    </ol>
+  </details>
+
+  <div class="review-cta">Run <code>/review</code>.</div>
+</article>
+</main>
+
+<nav class="lesson-nav">
+  <a class="prev" href="04-ipv4-marshal-icmp.html"><span class="dir">← Prev</span><span class="ttl">04 · Serializing IPv4 + ICMP</span></a>
+  <a class="next" href="06-tcb-state-machine.html"><span class="dir">Next →</span><span class="ttl">06 · TCB &amp; state machine</span></a>
+</nav>
+
+<footer class="site">TCP From Scratch · build a TCP/IP stack in Go, one lesson at a time</footer>
+
+<script src="assets/lesson.js"></script>
+</body>
+</html>

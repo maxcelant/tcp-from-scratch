@@ -1,0 +1,186 @@
+<!--lesson-meta
+id: "10"
+title: Sending data
+requires:
+  files:
+    - internal/tcb/sendbuf.go
+    - internal/tcp/output.go
+    - cmd/tcp-echo/main.go
+  symbols:
+    - { pkg: ./internal/tcp, name: Conn.Write }
+  tests:
+    - ./internal/tcb/...
+  lints:
+    - cmd-builds
+    - tcb-no-io-imports
+  integration: scripts/check-L10.sh
+hints:
+  - "Conn.Write appends to a send buffer, then the output path segments it into MSS-sized chunks, each with seq = SND.NXT, advancing SND.NXT by the chunk length. RFC 793 §3.7 'Sending Data'."
+  - "Honor the peer's window: never let (SND.NXT - SND.UNA) exceed SND.WND. Don't send bytes the peer has no room for. For a first pass you can assume the window is always large enough (nc advertises ~64KB) but the check should exist."
+  - "When you receive an ACK in ESTABLISHED, advance SND.UNA to seg.ack (if it's in (SND.UNA, SND.NXT]). That frees buffer space and (in L11) cancels retransmit timers."
+  - "The PSH flag is informational — set it on segments that flush the send buffer. It doesn't change semantics for us. Don't overthink it."
+  - "Common bug: not updating SND.WND from incoming segments' Window field. The peer tells you its receive window on every ACK; track it as SND.WND."
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 10 — Sending data · TCP From Scratch</title>
+<link rel="stylesheet" href="assets/lesson.css">
+<script>(function(){try{var t=localStorage.getItem("tcpfs-theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">TCP From Scratch</a>
+  <div class="topbar-right">
+    <span class="lesson-counter">Lesson 10 / 14</span>
+    <button class="theme-toggle" type="button" aria-label="Toggle theme">🌙</button>
+  </div>
+</header>
+<div class="progress-rail"><div class="progress-fill"></div></div>
+
+<main class="lesson">
+<article>
+  <p class="eyebrow">Lesson 10 · The handshake &amp; data flow</p>
+  <h1>Sending data</h1>
+  <p class="lead">You can receive; now you can send. Implement <code>Conn.Write</code> (the <code>io.Writer</code> half), segment the outgoing stream into MSS-sized TCP segments, and respect the peer's advertised window. Then upgrade <code>tcp-echo</code> into a real echo server that writes received bytes back.</p>
+
+  <h2>Background</h2>
+
+  <h3>Sending data (RFC 793 §3.7)</h3>
+  <p><code>Conn.Write(p)</code> doesn't immediately put <code>p</code> on the wire as one segment. It:</p>
+  <ol>
+    <li>Appends <code>p</code> to the <strong>send buffer</strong>.</li>
+    <li>The output path pulls bytes from the buffer and forms segments, each at most <strong>MSS</strong> bytes (you negotiated MSS in the SYN; 1460 is typical, or use the peer's advertised MSS).</li>
+    <li>Each segment: <code>seq = SND.NXT</code>, <code>ack = RCV.NXT</code>, flags <code>ACK</code> (+ <code>PSH</code> on the last/flushing segment). After sending, <code>SND.NXT += len(segment_payload)</code>.</li>
+  </ol>
+
+  <h3>Flow control: the send window</h3>
+  <p>The peer advertises a <strong>receive window</strong> in every segment's Window field. That becomes your <code>SND.WND</code>. The invariant:</p>
+  <div class="code" data-lang="text">
+    <div class="code-bar"><span class="code-lang">text</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>SND.NXT - SND.UNA  ≤  SND.WND</code></pre>
+  </div>
+  <p>i.e. you may have at most <code>SND.WND</code> bytes "in flight" (sent but unacknowledged). Before sending a segment, check there's window room. If the window is full, the data stays in the send buffer until an ACK opens the window.</p>
+  <p>For a first pass against <code>nc</code> (which advertises ~64KB), the window will rarely be the limiting factor — but <strong>implement the check anyway</strong>; it's the whole point of flow control, and the L10 integration test sends enough data to matter.</p>
+
+  <h3>Advancing SND.UNA on ACK</h3>
+  <p>When an ACK arrives in ESTABLISHED:</p>
+  <ul>
+    <li>If <code>SND.UNA &lt; seg.ack ≤ SND.NXT</code>: advance <code>SND.UNA = seg.ack</code>. This acknowledges (and frees) those bytes from the send buffer.</li>
+    <li>Update <code>SND.WND = seg.window</code>.</li>
+    <li>(L11: this is also where you cancel/reschedule retransmit timers.)</li>
+  </ul>
+
+  <h3>The send buffer</h3>
+  <div class="code" data-lang="go">
+    <div class="code-bar"><span class="code-lang">go</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>package tcb
+
+// SendBuffer holds outgoing bytes not yet acknowledged.
+type SendBuffer struct {
+    // unacked bytes + bookkeeping mapping buffer offsets to sequence numbers
+}
+
+func (s *SendBuffer) Write(p []byte) int      // app enqueues
+func (s *SendBuffer) Acked(upto uint32)        // drop bytes the peer ACKed
+// plus a way for the output path to read "next unsent chunk up to n bytes"</code></pre>
+  </div>
+  <p>Keep it pure (sync allowed, no I/O). The mapping from byte offsets to sequence numbers is the interesting part: track the sequence number of the first byte in the buffer, so <code>Acked(seg.ack)</code> can compute how many bytes to drop.</p>
+
+  <h3>The output path</h3>
+  <p><code>internal/tcp/output.go</code> holds the logic that turns "there are bytes to send and window allows it" into actual segments written to the device. This is where segmentation + the window check live. It's called:</p>
+  <ul>
+    <li>when the app calls <code>Conn.Write</code> (try to send immediately), and</li>
+    <li>when an ACK opens the window (try to send more).</li>
+  </ul>
+
+  <h2>What to implement</h2>
+
+  <h3><code>internal/tcb/sendbuf.go</code></h3>
+  <p><code>SendBuffer</code> + tests (<code>sendbuf_test.go</code>):</p>
+  <ul>
+    <li>Write then "next chunk" returns the bytes, capped at the requested size.</li>
+    <li><code>Acked</code> drops the right number of bytes and is idempotent for duplicate/old ACKs.</li>
+    <li>Sequence-number wraparound: <code>Acked</code> works correctly when sequence numbers wrap past 2³². (Use the comparison helper from RFC 793 §3.3 — <code>a &lt; b</code> in sequence space means <code>int32(a-b) &lt; 0</code>.)</li>
+  </ul>
+
+  <div class="callout callout--bug">
+    <span class="callout-title">Common bug</span>
+    <p>Not updating <code>SND.WND</code> from incoming segments' Window field. The peer tells you its receive window on every ACK; track it as <code>SND.WND</code>.</p>
+  </div>
+
+  <h3><code>internal/tcp/output.go</code></h3>
+  <ul>
+    <li><code>func (c *Conn) sendData()</code> (or similar): while there are unsent bytes AND window room, form an MSS-sized segment and send it, advancing SND.NXT.</li>
+    <li>Called from <code>Conn.Write</code> and from the ACK handler.</li>
+  </ul>
+
+  <h3>Extend <code>internal/tcp/listener.go</code></h3>
+  <ul>
+    <li>On ACK in ESTABLISHED: advance SND.UNA, update SND.WND, call <code>sendData()</code> to push more if the window opened.</li>
+  </ul>
+
+  <h3><code>Conn.Write</code></h3>
+  <div class="code" data-lang="go">
+    <div class="code-bar"><span class="code-lang">go</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>// Write implements io.Writer. It enqueues p for transmission and returns
+// len(p) once buffered (it does not block for the bytes to be ACKed).
+func (c *Conn) Write(p []byte) (int, error)</code></pre>
+  </div>
+
+  <h3>Upgrade <code>cmd/tcp-echo/main.go</code></h3>
+  <p>Make it a real echo: <code>io.Copy(conn, conn)</code> — read bytes, write them straight back. (Now that Conn is both Reader and Writer, <code>io.Copy</code> just works. That's the payoff of implementing the stdlib interfaces.)</p>
+
+  <h2>How to test it yourself</h2>
+  <div class="code" data-lang="bash">
+    <div class="code-bar"><span class="code-lang">bash</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>go build ./...
+sudo ./scripts/net-up.sh
+sudo ./tcp-echo &amp;
+
+echo "round trip test" | nc -q1 10.0.0.2 7777
+# Should print back: round trip test
+
+# Bigger test — force multiple segments:
+head -c 5000 /dev/urandom | base64 | nc -q1 10.0.0.2 7777 | wc -c
+# Output byte count should match what was sent.</code></pre>
+  </div>
+  <p><code>make tcpdump</code> should show your data segments going out with increasing seq numbers, each ≤ MSS, and the peer's ACKs advancing.</p>
+
+  <div class="donewhen">
+    <h2>Done when</h2>
+    <ul>
+      <li><code>SendBuffer</code> passes unit tests including sequence wraparound.</li>
+      <li><code>Conn.Write</code> enqueues and segments correctly, respecting SND.WND.</li>
+      <li><code>tcp-echo</code> echoes data back (small and multi-segment).</li>
+      <li>The integration check <code>scripts/check-L10.sh</code> sends a multi-segment (~6 KB) payload through the echo server and confirms it comes back byte-identical.</li>
+    </ul>
+  </div>
+
+  <details class="hints">
+    <summary>Stuck? Reveal hints (they escalate)</summary>
+    <ol>
+      <li>Conn.Write appends to a send buffer, then the output path segments it into MSS-sized chunks, each with seq = SND.NXT, advancing SND.NXT by the chunk length. RFC 793 §3.7 'Sending Data'.</li>
+      <li>Honor the peer's window: never let (SND.NXT - SND.UNA) exceed SND.WND. Don't send bytes the peer has no room for. For a first pass you can assume the window is always large enough (nc advertises ~64KB) but the check should exist.</li>
+      <li>When you receive an ACK in ESTABLISHED, advance SND.UNA to seg.ack (if it's in (SND.UNA, SND.NXT]). That frees buffer space and (in L11) cancels retransmit timers.</li>
+      <li>The PSH flag is informational — set it on segments that flush the send buffer. It doesn't change semantics for us. Don't overthink it.</li>
+      <li>Common bug: not updating SND.WND from incoming segments' Window field. The peer tells you its receive window on every ACK; track it as SND.WND.</li>
+    </ol>
+  </details>
+
+  <div class="review-cta">Run <code>/review</code>.</div>
+</article>
+</main>
+
+<nav class="lesson-nav">
+  <a class="prev" href="09-receiving-data.html"><span class="dir">← Prev</span><span class="ttl">09 · Receiving data + ACKing</span></a>
+  <a class="next" href="11-retransmission.html"><span class="dir">Next →</span><span class="ttl">11 · Retransmission (RTO)</span></a>
+</nav>
+
+<footer class="site">TCP From Scratch · build a TCP/IP stack in Go, one lesson at a time</footer>
+
+<script src="assets/lesson.js"></script>
+</body>
+</html>

@@ -1,0 +1,180 @@
+<!--lesson-meta
+id: "14"
+title: "Capstone: speak HTTP/1.0"
+requires:
+  files:
+    - cmd/curl-lite/main.go
+  symbols:
+    - { pkg: ./internal/tcp, name: Dial }
+    - { pkg: ./internal/tcp, name: Conn.Read }
+    - { pkg: ./internal/tcp, name: Conn.Write }
+    - { pkg: ./internal/tcp, name: Conn.Close }
+  lints:
+    - cmd-builds
+  integration: scripts/check-L14.sh
+hints:
+  - "There's no new protocol here. curl-lite = Dial + Write the request + io.ReadAll the response + Close. If each of those works individually (L09–L13), the capstone is plumbing."
+  - "An HTTP/1.0 request is text: `GET / HTTP/1.0\\r\\nHost: <host>\\r\\n\\r\\n`. The server replies with headers + body, then closes the connection — which is how you know the response is complete (read until io.EOF)."
+  - "HTTP/1.0 (not 1.1) is the right choice: the server closes after responding, so you don't need to parse Content-Length or chunked encoding. Read until EOF and you have the whole response."
+  - "Common bug: not flushing/closing your write side, or closing too early. Send the full request (with the blank line!) and then read. The blank line (\\r\\n\\r\\n) is what tells the server the request is done."
+  - "If you get a connection but no response bytes, check your Conn.Read returns received data before EOF — re-run the L09/L10 integration checks."
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 14 — Capstone: speak HTTP/1.0 · TCP From Scratch</title>
+<link rel="stylesheet" href="assets/lesson.css">
+<script>(function(){try{var t=localStorage.getItem("tcpfs-theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">TCP From Scratch</a>
+  <div class="topbar-right">
+    <span class="lesson-counter">Lesson 14 / 14</span>
+    <button class="theme-toggle" type="button" aria-label="Toggle theme">🌙</button>
+  </div>
+</header>
+<div class="progress-rail"><div class="progress-fill"></div></div>
+
+<main class="lesson">
+<article>
+  <p class="eyebrow">Lesson 14 · Capstone</p>
+  <h1>Capstone: speak HTTP/1.0</h1>
+  <p class="lead">This is it. You'll write <code>curl-lite</code>: a program that uses <strong>your</strong> TCP stack to connect to a real HTTP server, send a <code>GET /</code> request, and print the response. Every byte — the IP header, the TCP handshake, the data segments, the ACKs, the FIN — is produced by code you wrote. The kernel just shuttles opaque bytes between your TUN device and the server.</p>
+
+  <h2>Background</h2>
+
+  <h3>Why this proves everything</h3>
+  <p>HTTP/1.0 over TCP exercises your entire stack end to end:</p>
+  <ol>
+    <li><strong><code>Dial</code></strong> (L12) → 3-way handshake (L07, L08) → ESTABLISHED.</li>
+    <li><strong><code>Write</code></strong> (L10) the HTTP request → segmentation, checksums, the peer's ACKs advance SND.UNA.</li>
+    <li><strong><code>Read</code></strong> (L09) the response → in-order delivery, your ACKs advance RCV.NXT.</li>
+    <li>Lost packets? <strong>Retransmission</strong> (L11) recovers silently.</li>
+    <li>Server finishes, sends <strong>FIN</strong> (L13) → you read <code>io.EOF</code>, you <code>Close()</code>.</li>
+  </ol>
+
+  <div class="callout callout--note">
+    <span class="callout-title">Why this proves everything</span>
+    <p>If <code>curl-lite</code> prints a valid HTTP response, you have built a working TCP stack.</p>
+  </div>
+
+  <h3>Why HTTP/1.0 specifically</h3>
+  <div class="callout callout--note">
+    <span class="callout-title">Why HTTP/1.0 specifically</span>
+    <p>In HTTP/1.0, the server sends its response and then <strong>closes the connection</strong>. "Response complete" = "connection closed" = your <code>Read</code> returns <code>io.EOF</code>. No need to parse <code>Content-Length</code> or chunked transfer encoding — just <code>io.ReadAll(conn)</code>. (HTTP/1.1 keeps the connection alive and would require you to parse framing — out of scope.)</p>
+  </div>
+
+  <h3>The request format</h3>
+  <div class="code" data-lang="text">
+    <div class="code-bar"><span class="code-lang">text</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>GET / HTTP/1.0\r\n
+Host: 10.0.0.1\r\n
+\r\n</code></pre>
+  </div>
+  <p>Three lines: request line, one header, blank line. The blank line (<code>\r\n\r\n</code> at the end) terminates the request. Note <code>\r\n</code>, not <code>\n</code> — HTTP uses CRLF.</p>
+
+  <h3>The response</h3>
+  <div class="code" data-lang="text">
+    <div class="code-bar"><span class="code-lang">text</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>HTTP/1.0 200 OK\r\n
+Server: SimpleHTTP/0.6 Python/3.x\r\n
+Date: ...\r\n
+Content-type: text/html\r\n
+Content-Length: ...\r\n
+\r\n
+&lt;html&gt;... body ...&lt;/html&gt;</code></pre>
+  </div>
+  <p>You just print all of it. Optionally split headers from body at the first <code>\r\n\r\n</code>, but printing the raw response is enough for the capstone.</p>
+
+  <h2>What to implement</h2>
+
+  <h3><code>cmd/curl-lite/main.go</code></h3>
+  <div class="code" data-lang="go">
+    <div class="code-bar"><span class="code-lang">go</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>// Usage: curl-lite http://10.0.0.1:8080/
+//   (or:  curl-lite 10.0.0.1:8080  — your call on URL parsing depth)</code></pre>
+  </div>
+
+  <p>The flow:</p>
+  <ol>
+    <li>Parse the target host:port (and path) from os.Args. A minimal <code>net/url</code> parse, or just accept <code>host:port</code> and assume path <code>/</code>.</li>
+    <li><code>conn, err := tcp.Dial(netip.MustParseAddrPort(hostport))</code>.</li>
+    <li>Build the request string and <code>conn.Write([]byte(req))</code>.</li>
+    <li><code>resp, err := io.ReadAll(conn)</code> — reads until <code>io.EOF</code> (the server's FIN).</li>
+    <li>Print <code>resp</code> to stdout.</li>
+    <li><code>conn.Close()</code>.</li>
+  </ol>
+
+  <p>Because your <code>Conn</code> implements <code>io.Reader</code>, <code>io.Writer</code>, and <code>io.Closer</code>, this is almost entirely stdlib glue. That's the reward for respecting the interfaces all along.</p>
+
+  <div class="callout callout--bug">
+    <span class="callout-title">Common bug</span>
+    <p>Keep it clean: parse args, handle errors with clear messages, don't leak the connection on error paths (<code>defer conn.Close()</code>).</p>
+  </div>
+
+  <h2>How to test it yourself</h2>
+  <div class="code" data-lang="bash">
+    <div class="code-bar"><span class="code-lang">bash</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>go build ./cmd/curl-lite
+sudo ./scripts/net-up.sh
+python3 -m http.server 8080 --bind 10.0.0.1 &amp;
+
+sudo ./curl-lite http://10.0.0.1:8080/</code></pre>
+  </div>
+  <p>Expected output: an HTTP/1.0 response — status line, headers, and a directory listing HTML body.</p>
+  <p>Run <code>make tcpdump</code> in another terminal and watch the <strong>complete life of a TCP connection</strong> scroll by: SYN, SYN/ACK, ACK, PSH/ACK (your GET), the server's response segments with your ACKs, then FIN/ACK both ways. That capture is the artifact of everything you built.</p>
+
+  <div class="donewhen">
+    <h2>Done when</h2>
+    <ul>
+      <li><code>cmd/curl-lite</code> builds.</li>
+      <li>The integration check <code>scripts/check-L14.sh</code>:
+        <ol>
+          <li>Brings up <code>tun0</code> and starts <code>python3 -m http.server</code> on <code>10.0.0.1</code>.</li>
+          <li>Runs <code>curl-lite</code> against it with a timeout.</li>
+          <li>Asserts stdout starts with <code>HTTP/1.0 200</code>.</li>
+          <li>Captures a pcap and confirms the full handshake + data + FIN appear, with no RST and no retransmit storm.</li>
+        </ol>
+      </li>
+      <li>When it's green, <code>/review</code> prints: <strong>🏆 You have built TCP.</strong></li>
+    </ul>
+  </div>
+
+  <details class="hints">
+    <summary>Stuck? Reveal hints (they escalate)</summary>
+    <ol>
+      <li>There's no new protocol here. curl-lite = Dial + Write the request + io.ReadAll the response + Close. If each of those works individually (L09–L13), the capstone is plumbing.</li>
+      <li>An HTTP/1.0 request is text: <code>GET / HTTP/1.0\r\nHost: &lt;host&gt;\r\n\r\n</code>. The server replies with headers + body, then closes the connection — which is how you know the response is complete (read until io.EOF).</li>
+      <li>HTTP/1.0 (not 1.1) is the right choice: the server closes after responding, so you don't need to parse Content-Length or chunked encoding. Read until EOF and you have the whole response.</li>
+      <li>Common bug: not flushing/closing your write side, or closing too early. Send the full request (with the blank line!) and then read. The blank line (\r\n\r\n) is what tells the server the request is done.</li>
+      <li>If you get a connection but no response bytes, check your Conn.Read returns received data before EOF — re-run the L09/L10 integration checks.</li>
+    </ol>
+  </details>
+
+  <h2>After this — where to go next</h2>
+  <p>You have a real TCP stack. If you want to keep going:</p>
+  <ul>
+    <li><strong>Out-of-order reassembly</strong>: buffer segments with <code>seq &gt; RCV.NXT</code> instead of dropping them.</li>
+    <li><strong>Congestion control</strong>: add a congestion window (cwnd), slow start, and congestion avoidance (RFC 5681). This is the big one — it's what makes TCP fair on shared networks.</li>
+    <li><strong>Delayed ACKs &amp; Nagle's algorithm</strong>: reduce tiny-packet overhead.</li>
+    <li><strong>Window scaling, SACK, timestamps</strong>: the modern TCP options (RFC 7323, RFC 2018).</li>
+    <li><strong>A real <code>net.Listener</code>/<code>net.Conn</code> adapter</strong>: make your stack a drop-in <code>net.Dial</code> replacement and run an off-the-shelf HTTP client over it.</li>
+    <li><strong>IPv6</strong>: generalize the IP layer.</li>
+  </ul>
+  <p>But first — savour it. You sent TCP packets you built, to a real server, and got real bytes back. That's the intuition you came for.</p>
+</article>
+</main>
+
+<nav class="lesson-nav">
+  <a class="prev" href="13-fin-teardown.html"><span class="dir">← Prev</span><span class="ttl">13 · FIN teardown</span></a>
+  <a class="next disabled" href="index.html"><span class="dir">Done →</span><span class="ttl">Back to index</span></a>
+</nav>
+
+<footer class="site">TCP From Scratch · build a TCP/IP stack in Go, one lesson at a time</footer>
+
+<script src="assets/lesson.js"></script>
+</body>
+</html>

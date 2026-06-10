@@ -1,0 +1,178 @@
+<!--lesson-meta
+id: "01"
+title: Opening a TUN device
+requires:
+  files:
+    - internal/tun/tun.go
+    - cmd/tcpdump-lite/main.go
+  symbols:
+    - { pkg: ./internal/tun, name: Device }
+    - { pkg: ./internal/tun, name: Open }
+  lints:
+    - cmd-builds
+  integration: scripts/check-L01.sh
+hints:
+  - "A TUN device is opened by `open(\"/dev/net/tun\", O_RDWR)` and then configured with an `ioctl(TUNSETIFF, ...)`. Both are stdlib calls in Go via the `syscall` or `golang.org/x/sys/unix` package."
+  - "The ioctl request value is `TUNSETIFF` (0x400454ca). The struct you pass is `ifreq` — only the first 16 bytes (interface name) and the flags field matter for us. Flags should be `IFF_TUN | IFF_NO_PI` — IFF_TUN means L3, IFF_NO_PI means skip the 4-byte packet info prefix."
+  - "RFC-free pointer here — read `Documentation/networking/tuntap.txt` in the kernel tree (or just the man page `tun(4)`). The C example there is 30 lines and shows the exact ioctl shape."
+  - "Common bug: returning the file descriptor from Open without keeping `*os.File` around. Once `os.File` goes out of scope and gets GC'd, the FD is closed. Store the *os.File on your Device struct."
+  - "Common bug: the interface name field is 16 bytes, null-terminated. If you copy a Go string `\"tun0\"` straight into bytes you forget the null — that's usually fine because the buffer is zeroed, but make sure your buffer is exactly 16 bytes, not the length of the name."
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 01 — Opening a TUN device · TCP From Scratch</title>
+<link rel="stylesheet" href="assets/lesson.css">
+<script>(function(){try{var t=localStorage.getItem("tcpfs-theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">TCP From Scratch</a>
+  <div class="topbar-right">
+    <span class="lesson-counter">Lesson 01 / 14</span>
+    <button class="theme-toggle" type="button" aria-label="Toggle theme">🌙</button>
+  </div>
+</header>
+<div class="progress-rail"><div class="progress-fill"></div></div>
+
+<main class="lesson">
+<article>
+  <p class="eyebrow">Lesson 01 · Setup &amp; plumbing</p>
+  <h1>Opening a TUN device</h1>
+  <p class="lead">You'll write the lowest layer of the stack: a Go package that opens a TUN device and lets the rest of your code read/write raw L3 packets through it. Then you'll write a tiny binary that uses it to print every incoming packet as hex.</p>
+  <p>This is the <strong>only</strong> package that talks to the OS device. Everything else in the project will operate on byte slices.</p>
+
+  <h2>Background</h2>
+
+  <h3>What <code>/dev/net/tun</code> actually is</h3>
+  <p><code>/dev/net/tun</code> is a special character device. Opening it gives you a file descriptor that is <strong>not yet attached</strong> to any interface. To attach it to a specific interface (and create that interface if it doesn't exist), you call <code>ioctl(fd, TUNSETIFF, &amp;ifr)</code> where <code>ifr</code> is a <code>struct ifreq</code> populated with:</p>
+  <ul>
+    <li><code>ifr_name</code> — the interface name you want, e.g. <code>"tun0"</code>. Up to 15 chars + null.</li>
+    <li><code>ifr_flags</code> — <code>IFF_TUN | IFF_NO_PI</code>.</li>
+  </ul>
+  <p><code>IFF_TUN</code> selects TUN mode (L3 packets, no Ethernet header). <code>IFF_NO_PI</code> says "don't prepend the 4-byte 'packet info' header that the kernel would otherwise add" — we don't want it; it's a vestige.</p>
+  <p>After the ioctl succeeds, the interface <code>tun0</code> exists in <code>ip link</code>, and read/write on the fd transfers raw L3 packet bytes.</p>
+
+  <h3>The <code>ifreq</code> struct in Go</h3>
+  <p>In C, <code>struct ifreq</code> is a tagged union about 40 bytes long. We only care about two fields:</p>
+  <figure class="diagram">
+<pre class="ascii">offset 0  : char ifr_name[16];        // interface name, null-padded
+offset 16 : short ifr_flags;          // flags (for our ioctl)
+... rest unused for us ...</pre>
+    <figcaption>The layout of <code>struct ifreq</code> — only the 16-byte name and the flags field matter for the TUNSETIFF ioctl.</figcaption>
+  </figure>
+  <p>In Go, the cleanest approach is <code>golang.org/x/sys/unix</code>. It exposes <code>Ifreq</code> types, <code>IoctlSetInt</code>, and constants like <code>unix.IFF_TUN</code>, <code>unix.IFF_NO_PI</code>, <code>unix.TUNSETIFF</code>. You can also do it with raw <code>syscall.Syscall(SYS_IOCTL, ...)</code> and a <code>[]byte</code> buffer — but the <code>unix</code> package is idiomatic.</p>
+
+  <h3>Reading and writing packets</h3>
+  <p>Once attached, the file descriptor behaves like a pipe:</p>
+  <ul>
+    <li><code>Read(buf)</code> — blocks until a packet is available; copies one packet's bytes into <code>buf</code>. Returns the packet length. A typical buffer size is the MTU (1500 by default).</li>
+    <li><code>Write(buf)</code> — sends one packet. The bytes must form a valid L3 packet (starting with the IPv4 version nibble).</li>
+  </ul>
+  <p>One read = one full packet. You don't have to deal with TCP-style "stream chunks at this layer" — that's our job to add on top.</p>
+
+  <h3>Bringing the interface up</h3>
+  <p>A TUN device needs an address and to be <code>UP</code> before the kernel will route packets to it. The helper <code>scripts/net-up.sh</code> creates a <strong>persistent</strong> <code>tun0</code>, assigns <code>10.0.0.1/24</code> (the kernel/peer side), and brings it up:</p>
+  <div class="code" data-lang="bash">
+    <div class="code-bar"><span class="code-lang">bash</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>sudo ip tuntap add dev tun0 mode tun   # persistent device (survives without the fd)
+sudo ip addr add 10.0.0.1/24 dev tun0
+sudo ip link set tun0 up</code></pre>
+  </div>
+  <p>Because <code>net-up.sh</code> pre-creates <code>tun0</code>, your <code>Open("tun0")</code> <strong>attaches to the existing device</strong> rather than creating a fresh one. The integration check runs <code>net-up.sh</code> for you.</p>
+
+  <h2>What to implement</h2>
+
+  <h3><code>internal/tun/tun.go</code></h3>
+  <p>A <code>Device</code> type that wraps an attached TUN file descriptor and satisfies <code>io.ReadWriteCloser</code>. Specifically:</p>
+  <ul>
+    <li><code>type Device struct { ... }</code> — fields are yours to design (you'll need at least the <code>*os.File</code>).</li>
+    <li><code>func Open(name string) (*Device, error)</code> — opens <code>/dev/net/tun</code>, does the <code>TUNSETIFF</code> ioctl with the given name (e.g. <code>"tun0"</code>), returns the device. Errors should wrap the underlying syscall error with <code>fmt.Errorf("...: %w", err)</code>.</li>
+    <li><code>func (d *Device) Read(p []byte) (int, error)</code> — standard <code>io.Reader</code> semantics. One call returns one packet.</li>
+    <li><code>func (d *Device) Write(p []byte) (int, error)</code> — standard <code>io.Writer</code> semantics. One call sends one packet.</li>
+    <li><code>func (d *Device) Close() error</code> — closes the fd.</li>
+    <li><code>func (d *Device) Name() string</code> — returns the interface name you attached to (useful for logging).</li>
+  </ul>
+
+  <div class="callout callout--tip">
+    <span class="callout-title">Constraint</span>
+    <p><code>Device</code> must satisfy <code>io.ReadWriteCloser</code>. A trivial way to enforce this is a compile-time assertion: <code>var _ io.ReadWriteCloser = (*Device)(nil)</code> at the top of the file. Do this. It's a one-liner that prevents a class of bugs.</p>
+  </div>
+
+  <h3><code>cmd/tcpdump-lite/main.go</code></h3>
+  <p>A <code>main()</code> that:</p>
+  <ol>
+    <li>Takes an interface name from os.Args (default <code>"tun0"</code>).</li>
+    <li>Calls <code>tun.Open(name)</code>.</li>
+    <li>In a loop, reads one packet at a time into a 1500-byte buffer and prints a single line per packet:
+      <div class="code" data-lang="text">
+        <div class="code-bar"><span class="code-lang">text</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>[42] 4500 0054 a3b1 4000 4001 7f23 0a00 0001 0a00 0002 0800 ...</code></pre>
+      </div>
+      The leading <code>[N]</code> is the byte length. Hex bytes follow, space-separated in groups of 2 bytes (4 hex chars).
+    </li>
+    <li>Handles SIGINT by closing the device and exiting cleanly.</li>
+  </ol>
+  <p>This binary is the userspace equivalent of <code>tcpdump -ni tun0 -x</code>. It's how you'll sanity-check that your device works in subsequent lessons.</p>
+
+  <h3>A note on idiomatic Go</h3>
+  <ul>
+    <li>The TUN package is the only place that imports <code>os</code>, <code>syscall</code>, or <code>golang.org/x/sys/unix</code>. Keep it that way.</li>
+    <li>Don't take logger or context as constructor arguments. <code>Open</code> returns a Device — that's it.</li>
+    <li>Don't add a <code>Run()</code> method or wrap the read loop inside the package. The package is plumbing; the binary is the user.</li>
+  </ul>
+
+  <h2>How to test it yourself</h2>
+  <p>After you've implemented both files, from inside the dev container:</p>
+  <div class="code" data-lang="bash">
+    <div class="code-bar"><span class="code-lang">bash</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>go build ./cmd/tcpdump-lite
+sudo ./scripts/net-up.sh             # creates tun0 = 10.0.0.1/24
+sudo ./tcpdump-lite tun0 &amp;           # start your tool in background
+ping -c 3 -W 1 10.0.0.2              # 10.0.0.2 routes to tun0 -&gt; your program reads it</code></pre>
+  </div>
+  <p>You should see 3 packets print as hex on stdout (the ICMP echo requests the kernel sent toward <code>10.0.0.2</code>). They'll be ignored by your binary (you're not replying yet — that's L04), so <code>ping</code> reports 100% loss. That's expected.</p>
+  <p>Stop with Ctrl-C, then:</p>
+  <div class="code" data-lang="bash">
+    <div class="code-bar"><span class="code-lang">bash</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>sudo ./scripts/net-down.sh</code></pre>
+  </div>
+  <p>In a separate terminal you can also run <code>sudo tcpdump -ni tun0 -x</code> and compare the bytes to your tool's output — they should match.</p>
+
+  <div class="donewhen">
+    <h2>Done when</h2>
+    <ul>
+      <li><code>internal/tun/tun.go</code> compiles.</li>
+      <li><code>tun.Device</code> satisfies <code>io.ReadWriteCloser</code> (compile-time check passes).</li>
+      <li><code>cmd/tcpdump-lite</code> builds and runs.</li>
+      <li>The integration check <code>scripts/check-L01.sh</code> passes: it brings up <code>tun0</code>, runs your binary in the background, pings <code>10.0.0.2</code> 3 times, and confirms at least 3 packet-lines on stdout.</li>
+    </ul>
+  </div>
+
+  <details class="hints">
+    <summary>Stuck? Reveal hints (they escalate)</summary>
+    <ol>
+      <li>A TUN device is opened by <code>open("/dev/net/tun", O_RDWR)</code> and then configured with an <code>ioctl(TUNSETIFF, ...)</code>. Both are stdlib calls in Go via the <code>syscall</code> or <code>golang.org/x/sys/unix</code> package.</li>
+      <li>The ioctl request value is <code>TUNSETIFF</code> (0x400454ca). The struct you pass is <code>ifreq</code> — only the first 16 bytes (interface name) and the flags field matter for us. Flags should be <code>IFF_TUN | IFF_NO_PI</code> — IFF_TUN means L3, IFF_NO_PI means skip the 4-byte packet info prefix.</li>
+      <li>RFC-free pointer here — read <code>Documentation/networking/tuntap.txt</code> in the kernel tree (or just the man page <code>tun(4)</code>). The C example there is 30 lines and shows the exact ioctl shape.</li>
+      <li>Common bug: returning the file descriptor from Open without keeping <code>*os.File</code> around. Once <code>os.File</code> goes out of scope and gets GC'd, the FD is closed. Store the *os.File on your Device struct.</li>
+      <li>Common bug: the interface name field is 16 bytes, null-terminated. If you copy a Go string <code>"tun0"</code> straight into bytes you forget the null — that's usually fine because the buffer is zeroed, but make sure your buffer is exactly 16 bytes, not the length of the name.</li>
+    </ol>
+  </details>
+
+  <div class="review-cta">Run <code>/review</code>.</div>
+</article>
+</main>
+
+<nav class="lesson-nav">
+  <a class="prev" href="00-intro.html"><span class="dir">← Prev</span><span class="ttl">00 · Intro &amp; Setup</span></a>
+  <a class="next" href="02-ipv4-parse.html"><span class="dir">Next →</span><span class="ttl">02 · Parsing IPv4 headers</span></a>
+</nav>
+
+<footer class="site">TCP From Scratch · build a TCP/IP stack in Go, one lesson at a time</footer>
+
+<script src="assets/lesson.js"></script>
+</body>
+</html>

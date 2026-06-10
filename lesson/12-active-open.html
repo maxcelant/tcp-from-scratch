@@ -1,0 +1,175 @@
+<!--lesson-meta
+id: "12"
+title: Active open (client)
+requires:
+  files:
+    - internal/tcp/dial.go
+  symbols:
+    - { pkg: ./internal/tcp, name: Dial }
+  lints:
+    - cmd-builds
+  integration: scripts/check-L12.sh
+hints:
+  - "Active open is the mirror of passive open. You SEND the first SYN (seq = ISS, no ACK flag), move to SYN-SENT, and wait. RFC 793 §3.4."
+  - "On receiving SYN/ACK in SYN-SENT: check seg.ack == ISS+1, set RCV.IRS = seg.seq, RCV.NXT = seg.seq+1, SND.UNA = seg.ack, send a bare ACK, move to ESTABLISHED."
+  - "You need an ephemeral local port. Pick a random port in 49152-65535, or just hardcode one for testing. Your stack's address (10.0.0.2) is not a kernel-local address, so the kernel has no sockets there to collide with — just don't reuse a 4-tuple already in your demux map."
+  - "Dial shares almost all machinery with Listen: same demux map, same read loop, same Conn. Refactor so both passive and active opens create a Conn and register it in the demux. Don't duplicate the read loop."
+  - "Common bug: your source address. You MUST send the SYN with src = 10.0.0.2 so the server's reply (dst 10.0.0.2) routes back into tun0. If you accidentally use 10.0.0.1, replies go to the kernel itself and you'll never see them. Watch for instant RSTs in tcpdump."
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 12 — Active open (client) · TCP From Scratch</title>
+<link rel="stylesheet" href="assets/lesson.css">
+<script>(function(){try{var t=localStorage.getItem("tcpfs-theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">TCP From Scratch</a>
+  <div class="topbar-right">
+    <span class="lesson-counter">Lesson 12 / 14</span>
+    <button class="theme-toggle" type="button" aria-label="Toggle theme">🌙</button>
+  </div>
+</header>
+<div class="progress-rail"><div class="progress-fill"></div></div>
+
+<main class="lesson">
+<article>
+  <p class="eyebrow">Lesson 12 · Reliability &amp; teardown</p>
+  <h1>Active open (client)</h1>
+  <p class="lead">So far your stack has been a server (passive open — it waits for SYNs). Now make it a client: <code>tcp.Dial</code> initiates a connection by sending the first SYN. This is what the capstone <code>curl-lite</code> needs to connect to an HTTP server.</p>
+
+  <h2>Background</h2>
+
+  <h3>Active vs passive open</h3>
+  <figure class="diagram">
+<pre class="ascii">   ACTIVE (Dial)                      PASSIVE (Listen)
+   ------------                       ----------------
+   send SYN  ───────────────────────►  receive SYN
+   SYN-SENT                            send SYN/ACK, SYN-RECEIVED
+   receive SYN/ACK  ◄────────────────
+   send ACK  ───────────────────────►  receive ACK
+   ESTABLISHED                         ESTABLISHED</pre>
+    <figcaption>The two halves of the handshake — you built the right column in L07–L08; the left column is this lesson.</figcaption>
+  </figure>
+
+  <p>You've implemented the right column (L07–L08). The left column is this lesson.</p>
+
+  <h3>SYN-SENT handling (RFC 793 §3.4, §3.9)</h3>
+  <ol>
+    <li><code>Dial</code>:
+      <ul>
+        <li>Pick a local ephemeral port.</li>
+        <li>Create a Conn, set <code>ISS</code>, <code>SND.UNA = ISS</code>, <code>SND.NXT = ISS + 1</code>.</li>
+        <li>Send a SYN: <code>seq = ISS</code>, flags <code>SYN</code>, MSS option, window = RCV.WND.</li>
+        <li>Transition to SYN-SENT.</li>
+        <li>Register in the demux map.</li>
+        <li>Block until ESTABLISHED (or timeout).</li>
+      </ul>
+    </li>
+    <li>On segment arrival in SYN-SENT:
+      <ul>
+        <li>Expect <code>SYN|ACK</code>.</li>
+        <li>Validate <code>seg.ack == SND.NXT</code> (= ISS+1). If not, RST/drop.</li>
+        <li>Set <code>RCV.IRS = seg.seq</code>, <code>RCV.NXT = seg.seq + 1</code>, <code>SND.UNA = seg.ack</code>, <code>SND.WND = seg.window</code>.</li>
+        <li>Send a bare ACK (<code>seq = SND.NXT</code>, <code>ack = RCV.NXT</code>, flags <code>ACK</code>).</li>
+        <li>Transition to ESTABLISHED.</li>
+        <li>Signal whatever <code>Dial</code> is blocked on.</li>
+      </ul>
+    </li>
+  </ol>
+
+  <h3>Refactor, don't duplicate</h3>
+  <p><code>Dial</code> and <code>Listen</code> share: the TUN device, the read loop, the demux map, the Conn type, the segment handlers for ESTABLISHED. Refactor so there's <strong>one</strong> read loop and <strong>one</strong> Conn implementation, with passive/active differing only in how the Conn is born and the SYN-SENT vs SYN-RECEIVED handlers.</p>
+  <p>A clean shape:</p>
+  <ul>
+    <li>An unexported <code>engine</code> (or reuse <code>Listener</code>'s internals) owns the device + demux + read loop.</li>
+    <li><code>Listen</code> creates an engine in listening mode.</li>
+    <li><code>Dial</code> creates an engine (or reuses one), registers an active Conn, sends SYN.</li>
+  </ul>
+  <p>If your L07 design hardcoded everything into <code>Listener</code>, this lesson is partly a refactor. That's intended — real understanding shows up when you make the passive and active paths share code without special-casing everywhere.</p>
+
+  <h3>Ephemeral ports</h3>
+  <p>Pick a local port in the dynamic range (49152–65535). Your stack lives at <code>10.0.0.2</code>, which is not a kernel-local address, so the kernel keeps no sockets there to collide with — just don't reuse a 4-tuple that's already in your demux map.</p>
+
+  <h3>Who's the server? The kernel.</h3>
+  <div class="callout callout--note">
+    <span class="callout-title">Who's the server? The kernel.</span>
+    <p>In the client lessons, the "real server" you dial is the <strong>Linux kernel's own TCP stack</strong>, running <code>python3 -m http.server --bind 10.0.0.1</code>. Your stack (as <code>10.0.0.2</code>) sends a SYN to <code>10.0.0.1:8080</code>; the kernel — which <em>does</em> own <code>10.0.0.1</code> — accepts it and runs the server side. Its SYN/ACK (dst <code>10.0.0.2</code>) routes back out <code>tun0</code> to your program. Source address discipline matters: always send as <code>10.0.0.2</code>.</p>
+  </div>
+
+  <h2>What to implement</h2>
+
+  <h3><code>internal/tcp/dial.go</code></h3>
+  <div class="code" data-lang="go">
+    <div class="code-bar"><span class="code-lang">go</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>// Dial actively opens a connection to remote, returning an ESTABLISHED Conn
+// (or an error / timeout). It performs the SYN → SYN/ACK → ACK handshake.
+func Dial(remote netip.AddrPort) (*Conn, error)</code></pre>
+  </div>
+
+  <p>Plus the SYN-SENT segment handler (likely in <code>listener.go</code>/the shared handler switch, or a new <code>handleSynSent</code> method).</p>
+
+  <p>You'll probably also need:</p>
+  <ul>
+    <li>A way to choose the local address. For our setup your stack's address is <code>10.0.0.2</code>; you can hardcode it or make <code>Dial</code> take it. Keep it simple — a package-level configurable local IP, or a <code>DialFrom(local, remote netip.AddrPort)</code> variant. (Remember: the SYN's source MUST be <code>10.0.0.2</code> so replies route back to tun0.)</li>
+    <li>A timeout (use the retransmit machinery from L11 — the SYN should be retransmitted if no SYN/ACK comes, and <code>Dial</code> should give up after a few tries).</li>
+  </ul>
+
+  <div class="callout callout--bug">
+    <span class="callout-title">Common bug: source address</span>
+    <p>You MUST send the SYN with src = <code>10.0.0.2</code> so the server's reply (dst <code>10.0.0.2</code>) routes back into tun0. If you accidentally use <code>10.0.0.1</code>, replies go to the kernel itself and you'll never see them. Watch for instant RSTs in <code>tcpdump</code>.</p>
+  </div>
+
+  <h2>How to test it yourself</h2>
+  <div class="code" data-lang="bash">
+    <div class="code-bar"><span class="code-lang">bash</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>go build ./...
+sudo ./scripts/net-up.sh
+
+# Run a REAL server on the kernel side (10.0.0.1):
+python3 -m http.server 8080 --bind 10.0.0.1 &amp;
+
+# A throwaway main that dials and prints state:
+#   c, err := tcp.Dial(netip.MustParseAddrPort("10.0.0.1:8080"))
+#   log.Println(c.State(), err)   // want: ESTABLISHED &lt;nil&gt;</code></pre>
+  </div>
+
+  <p><code>make tcpdump</code> should show your SYN (src <code>10.0.0.2</code>), the kernel's SYN/ACK, your ACK — and then nothing (a held-open connection). If you see a RST after the SYN/ACK, your ACK validation, checksum, or source address is wrong.</p>
+
+  <div class="donewhen">
+    <h2>Done when</h2>
+    <ul>
+      <li><code>tcp.Dial</code> exists and reaches ESTABLISHED against a real <code>python3 -m http.server</code> bound to <code>10.0.0.1</code>.</li>
+      <li>Passive (Listen) and active (Dial) paths share the read loop and Conn — no duplicated handshake state machine.</li>
+      <li>The integration check <code>scripts/check-L12.sh</code> starts a real HTTP server on <code>10.0.0.1</code> and confirms your <code>Dial</code> reaches ESTABLISHED with no RST.</li>
+    </ul>
+  </div>
+
+  <details class="hints">
+    <summary>Stuck? Reveal hints (they escalate)</summary>
+    <ol>
+      <li>Active open is the mirror of passive open. You SEND the first SYN (seq = ISS, no ACK flag), move to SYN-SENT, and wait. RFC 793 §3.4.</li>
+      <li>On receiving SYN/ACK in SYN-SENT: check seg.ack == ISS+1, set RCV.IRS = seg.seq, RCV.NXT = seg.seq+1, SND.UNA = seg.ack, send a bare ACK, move to ESTABLISHED.</li>
+      <li>You need an ephemeral local port. Pick a random port in 49152-65535, or just hardcode one for testing. Your stack's address (10.0.0.2) is not a kernel-local address, so the kernel has no sockets there to collide with — just don't reuse a 4-tuple already in your demux map.</li>
+      <li>Dial shares almost all machinery with Listen: same demux map, same read loop, same Conn. Refactor so both passive and active opens create a Conn and register it in the demux. Don't duplicate the read loop.</li>
+      <li>Common bug: your source address. You MUST send the SYN with src = 10.0.0.2 so the server's reply (dst 10.0.0.2) routes back into tun0. If you accidentally use 10.0.0.1, replies go to the kernel itself and you'll never see them. Watch for instant RSTs in tcpdump.</li>
+    </ol>
+  </details>
+
+  <div class="review-cta">Run <code>/review</code>.</div>
+</article>
+</main>
+
+<nav class="lesson-nav">
+  <a class="prev" href="11-retransmission.html"><span class="dir">← Prev</span><span class="ttl">11 · Retransmission (RTO)</span></a>
+  <a class="next" href="13-fin-teardown.html"><span class="dir">Next →</span><span class="ttl">13 · FIN teardown</span></a>
+</nav>
+
+<footer class="site">TCP From Scratch · build a TCP/IP stack in Go, one lesson at a time</footer>
+
+<script src="assets/lesson.js"></script>
+</body>
+</html>

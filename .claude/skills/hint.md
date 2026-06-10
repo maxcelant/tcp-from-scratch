@@ -22,7 +22,7 @@ You are giving a learner a nudge — not the answer. They are building TCP from 
 
 1. **Read `.progress`** → current lesson `NN`.
 
-2. **Open `lesson/NN-*.md`** and parse its YAML frontmatter. Look for the `hints:` array. Each entry is a string. They are pre-authored to escalate in roughly this order:
+2. **Open `lesson/NN-*.html`** and parse its lesson metadata. The metadata is a YAML block inside a leading HTML comment at the very top of the file, delimited by `<!--lesson-meta` and `-->`. Parse that YAML and look for the `hints:` array. Each entry is a string. They are pre-authored to escalate in roughly this order:
    - **Hint 0** — conceptual nudge ("what does the receiver need to know to ACK?")
    - **Hint 1** — point at a specific RFC section ("RFC 793 §3.3 covers sequence numbers")
    - **Hint 2** — point at a common bug for this lesson ("check byte order on the 16-bit fields")
@@ -56,5 +56,8 @@ Hint 3/4: A very common bug at this stage is computing the TCP checksum without 
 ```
 
 ## What if the lesson has no `hints:` block?
+
+(Lessons are HTML files. The human-readable hints are also rendered in a collapsible `<details class="hints">` block near the bottom of each lesson, but you should read them from the authoritative `<!--lesson-meta-->` YAML, not by scraping the rendered HTML.)
+
 
 Tell the user: `This lesson has no pre-authored hints — it's expected to be self-contained. Re-read the Background section, then run /review to see what specifically is failing.`

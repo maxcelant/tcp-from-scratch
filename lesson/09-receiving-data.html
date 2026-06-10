@@ -1,0 +1,191 @@
+<!--lesson-meta
+id: "09"
+title: Receiving data + ACKing
+requires:
+  files:
+    - internal/tcb/recvbuf.go
+    - internal/tcp/listener.go
+    - cmd/tcp-echo/main.go
+  symbols:
+    - { pkg: ./internal/tcp, name: Conn.Read }
+  tests:
+    - ./internal/tcb/...
+  lints:
+    - cmd-builds
+    - tcb-no-io-imports
+  integration: scripts/check-L09.sh
+hints:
+  - "In ESTABLISHED, a segment with a payload whose seq == RCV.NXT is in-order data. Append it to the receive buffer, advance RCV.NXT by len(payload), and send an ACK with ack = new RCV.NXT. RFC 793 §3.7 'Receiving Segments'."
+  - "For now, accept ONLY in-order segments (seq == RCV.NXT). If seg.seq != RCV.NXT, drop the payload but still ACK with your current RCV.NXT (a duplicate ACK) so the sender knows where you are. No reassembly queue yet."
+  - "Conn.Read should satisfy io.Reader: block until data is available, copy into the caller's buffer, return n. Use a condition variable (sync.Cond) or a channel to wake Read when the read-loop goroutine appends data."
+  - "Common bug: ACKing the wrong number. ack is the NEXT byte you expect, i.e. RCV.NXT AFTER you advanced it, not the seq of the segment you just got."
+  - "Common bug: deadlock between the read-loop goroutine (producer) and Conn.Read (consumer). Keep the lock discipline simple: lock, mutate buffer + RCV.NXT, signal, unlock; Read waits on the same cond."
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 09 — Receiving data + ACKing · TCP From Scratch</title>
+<link rel="stylesheet" href="assets/lesson.css">
+<script>(function(){try{var t=localStorage.getItem("tcpfs-theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">TCP From Scratch</a>
+  <div class="topbar-right">
+    <span class="lesson-counter">Lesson 09 / 14</span>
+    <button class="theme-toggle" type="button" aria-label="Toggle theme">🌙</button>
+  </div>
+</header>
+<div class="progress-rail"><div class="progress-fill"></div></div>
+
+<main class="lesson">
+<article>
+  <p class="eyebrow">Lesson 09 · The handshake &amp; data flow</p>
+  <h1>Receiving data + ACKing</h1>
+  <p class="lead">Your connection is ESTABLISHED. Now make it carry data: receive application bytes from the peer, buffer them, ACK them, and expose them through <code>Conn.Read</code> (an <code>io.Reader</code>). You'll prove it with a partial echo server that prints what it receives.</p>
+
+  <h2>Background</h2>
+
+  <h3>Receiving in-order data (RFC 793 §3.7)</h3>
+  <p>When a data segment arrives in ESTABLISHED:</p>
+  <ol>
+    <li><strong>Sequence check</strong>: is <code>seg.seq == RCV.NXT</code>?
+      <ul>
+        <li><strong>Yes</strong> → it's the next expected byte(s). Accept it.</li>
+        <li><strong>No</strong> → out of order (future) or a retransmit (past). For this lesson, <strong>drop the payload</strong> and send a duplicate ACK (ack = current RCV.NXT). We are NOT implementing the reassembly queue — in-order delivery only. (Real TCP buffers out-of-order segments; we keep it simple.)</li>
+      </ul>
+    </li>
+    <li><strong>Accept the data</strong>: append <code>seg.payload</code> to the receive buffer, advance <code>RCV.NXT += len(payload)</code>.</li>
+    <li><strong>Send an ACK</strong>: a segment with no payload, flags=ACK, <code>ack = RCV.NXT</code> (the new value), <code>seq = SND.NXT</code>.</li>
+  </ol>
+  <p>ACKing every segment is fine — we're not implementing delayed ACKs.</p>
+
+  <h3>The receive buffer</h3>
+  <p>A simple bounded byte buffer:</p>
+  <ul>
+    <li>The read-loop goroutine <strong>appends</strong> received bytes.</li>
+    <li><code>Conn.Read</code> <strong>consumes</strong> bytes (FIFO).</li>
+    <li>When empty, <code>Conn.Read</code> <strong>blocks</strong> until data arrives or the connection closes (returns <code>io.EOF</code> after FIN — that's L13; for now, block).</li>
+  </ul>
+  <p>This belongs in <code>internal/tcb/recvbuf.go</code> as a pure data structure — no I/O, just bytes and synchronization primitives... but wait: synchronization is fine (<code>sync</code> is pure, not I/O). The <code>tcb-no-io-imports</code> lint only forbids <code>os</code>/<code>net</code>/<code>syscall</code>/<code>x/sys</code>. <code>sync</code> is allowed.</p>
+
+  <div class="callout callout--note">
+    <span class="callout-title">Why sync is allowed</span>
+    <p>The <code>tcb-no-io-imports</code> lint only forbids <code>os</code>/<code>net</code>/<code>syscall</code>/<code>x/sys</code>. <code>sync</code> is pure, not I/O, so a <code>sync.Cond</code> or channel inside <code>RecvBuffer</code> keeps the package pure while still letting <code>Read</code> block.</p>
+  </div>
+
+  <p>Design:</p>
+  <div class="code" data-lang="go">
+    <div class="code-bar"><span class="code-lang">go</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>package tcb
+
+// RecvBuffer is an in-order byte buffer fed by the network and drained by Read.
+type RecvBuffer struct {
+    // bytes + a sync.Cond or a chan to wake readers
+}
+
+func (r *RecvBuffer) Write(p []byte)        // called by the stack (append)
+func (r *RecvBuffer) Read(p []byte) (int, error) // called by the app (blocks if empty)
+func (r *RecvBuffer) CloseWrite()           // mark EOF (used in L13)</code></pre>
+  </div>
+
+  <p>(Naming <code>Write</code> for "network appends" and <code>Read</code> for "app consumes" mirrors a pipe. If that confuses you, name them <code>Push</code>/<code>Read</code>.)</p>
+
+  <h3><code>Conn.Read</code></h3>
+  <div class="code" data-lang="go">
+    <div class="code-bar"><span class="code-lang">go</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>// Read implements io.Reader. It returns received application bytes,
+// blocking until at least one byte is available. After the peer's FIN has
+// been processed and the buffer drained, it returns io.EOF (full FIN
+// handling is Lesson 13).
+func (c *Conn) Read(p []byte) (int, error)</code></pre>
+  </div>
+  <p>It just delegates to the connection's <code>RecvBuffer</code>.</p>
+
+  <h2>What to implement</h2>
+
+  <h3><code>internal/tcb/recvbuf.go</code></h3>
+  <p>The <code>RecvBuffer</code> described above. Pure package (sync allowed; no os/net/syscall).</p>
+  <p>Add tests in <code>internal/tcb/recvbuf_test.go</code>:</p>
+  <ul>
+    <li>Write then Read returns the bytes in order.</li>
+    <li>Read of a buffer smaller than available returns a partial read and leaves the rest.</li>
+    <li>A blocked Read wakes up when Write is called from another goroutine.</li>
+    <li>After CloseWrite + drained, Read returns <code>io.EOF</code>.</li>
+  </ul>
+
+  <h3>Extend <code>internal/tcp/listener.go</code></h3>
+  <ul>
+    <li>Handle data segments in ESTABLISHED: sequence-check, append to RecvBuffer, advance RCV.NXT, send ACK.</li>
+    <li><code>Conn.Read</code> delegating to RecvBuffer.</li>
+  </ul>
+
+  <div class="callout callout--bug">
+    <span class="callout-title">Common bug</span>
+    <p>ACKing the wrong number. <code>ack</code> is the NEXT byte you expect, i.e. <code>RCV.NXT</code> AFTER you advanced it, not the seq of the segment you just got.</p>
+  </div>
+
+  <div class="callout callout--bug">
+    <span class="callout-title">Common bug</span>
+    <p>Deadlock between the read-loop goroutine (producer) and <code>Conn.Read</code> (consumer). Keep the lock discipline simple: lock, mutate buffer + RCV.NXT, signal, unlock; Read waits on the same cond.</p>
+  </div>
+
+  <h3><code>cmd/tcp-echo/main.go</code></h3>
+  <p>A first cut of the echo server (we'll extend it in L10–L11). <strong>Listen on <code>10.0.0.2:7777</code></strong> — that's your stack's address (the integration checks assume this):</p>
+  <ol>
+    <li><code>tcp.Listen(netip.MustParseAddrPort("10.0.0.2:7777"))</code>.</li>
+    <li><code>Accept()</code> a connection.</li>
+    <li>Loop: <code>Read</code> into a buffer, print what was received (<code>log.Printf("got: %q", buf[:n])</code>).
+      (Echoing it <em>back</em> requires <code>Conn.Write</code> — that's Lesson 10. For now just print.)</li>
+  </ol>
+
+  <h2>How to test it yourself</h2>
+  <div class="code" data-lang="bash">
+    <div class="code-bar"><span class="code-lang">bash</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>go build ./...
+sudo ./scripts/net-up.sh
+sudo ./tcp-echo &amp;
+
+printf 'hello\nworld\n' | nc -w1 10.0.0.2 7777
+# tcp-echo should print:  got: "hello\nworld\n"</code></pre>
+  </div>
+  <p>Watch <code>make tcpdump</code>: you should see the PSH/ACK with the data arrive, and your ACK go back with the right ack number (initial RCV.NXT + 12 for "hello\nworld\n").</p>
+
+  <div class="donewhen">
+    <h2>Done when</h2>
+    <ul>
+      <li><code>RecvBuffer</code> passes its unit tests (including the blocking-Read wakeup and EOF cases).</li>
+      <li><code>Conn.Read</code> returns received bytes in order.</li>
+      <li><code>cmd/tcp-echo</code> prints data sent by <code>nc</code>.</li>
+      <li>The integration check <code>scripts/check-L09.sh</code> sends a known string from the kernel and confirms the echo server logged it (proving the in-order data path + Conn.Read work).</li>
+      <li><code>tcb</code> package still passes the no-io-imports lint.</li>
+    </ul>
+  </div>
+
+  <details class="hints">
+    <summary>Stuck? Reveal hints (they escalate)</summary>
+    <ol>
+      <li>In ESTABLISHED, a segment with a payload whose seq == RCV.NXT is in-order data. Append it to the receive buffer, advance RCV.NXT by len(payload), and send an ACK with ack = new RCV.NXT. RFC 793 §3.7 'Receiving Segments'.</li>
+      <li>For now, accept ONLY in-order segments (seq == RCV.NXT). If seg.seq != RCV.NXT, drop the payload but still ACK with your current RCV.NXT (a duplicate ACK) so the sender knows where you are. No reassembly queue yet.</li>
+      <li>Conn.Read should satisfy io.Reader: block until data is available, copy into the caller's buffer, return n. Use a condition variable (sync.Cond) or a channel to wake Read when the read-loop goroutine appends data.</li>
+      <li>Common bug: ACKing the wrong number. ack is the NEXT byte you expect, i.e. RCV.NXT AFTER you advanced it, not the seq of the segment you just got.</li>
+      <li>Common bug: deadlock between the read-loop goroutine (producer) and Conn.Read (consumer). Keep the lock discipline simple: lock, mutate buffer + RCV.NXT, signal, unlock; Read waits on the same cond.</li>
+    </ol>
+  </details>
+
+  <div class="review-cta">Run <code>/review</code>.</div>
+</article>
+</main>
+
+<nav class="lesson-nav">
+  <a class="prev" href="08-handshake-complete.html"><span class="dir">← Prev</span><span class="ttl">08 · Completing the handshake</span></a>
+  <a class="next" href="10-sending-data.html"><span class="dir">Next →</span><span class="ttl">10 · Sending data</span></a>
+</nav>
+
+<footer class="site">TCP From Scratch · build a TCP/IP stack in Go, one lesson at a time</footer>
+
+<script src="assets/lesson.js"></script>
+</body>
+</html>

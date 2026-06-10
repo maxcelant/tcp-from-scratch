@@ -1,0 +1,296 @@
+<!--lesson-meta
+id: "06"
+title: TCB & state machine skeleton
+requires:
+  files:
+    - internal/tcb/state.go
+    - internal/tcb/tcb.go
+    - internal/tcb/state_test.go
+  symbols:
+    - { pkg: ./internal/tcb, name: State }
+    - { pkg: ./internal/tcb, name: TCB }
+  tests:
+    - ./internal/tcb/...
+  lints:
+    - tcb-no-io-imports
+hints:
+  - "RFC 793 §3.2 has the canonical state diagram. There are 11 states: CLOSED, LISTEN, SYN-SENT, SYN-RECEIVED, ESTABLISHED, FIN-WAIT-1, FIN-WAIT-2, CLOSE-WAIT, CLOSING, LAST-ACK, TIME-WAIT. Model them as an enum (`type State int` + iota constants)."
+  - "The TCB (Transmission Control Block) holds the send/receive sequence variables. RFC 793 §3.2 names them: SND.UNA, SND.NXT, SND.WND, ISS (send), RCV.NXT, RCV.WND, IRS (receive). Group them into a Send and Recv struct — it reads better than 8 loose fields."
+  - "This package must stay PURE — no `os`, `net`, `syscall` imports. It's just state and arithmetic. The /review lint enforces this. If you're tempted to import `net`, you want `net/netip` for addresses instead (that's allowed; it's a value type)."
+  - "Give State a `String()` method covering all 11 states. The /review check and your own debugging both rely on it. A missing case returning \"State(7)\" is a smell."
+  - "Don't implement transitions yet — just the types and a way to hold the 4-tuple (local addr/port, remote addr/port) plus the sequence variables. Behavior comes in L07+."
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 06 — TCB &amp; state machine skeleton · TCP From Scratch</title>
+<link rel="stylesheet" href="assets/lesson.css">
+<script>(function(){try{var t=localStorage.getItem("tcpfs-theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">TCP From Scratch</a>
+  <div class="topbar-right">
+    <span class="lesson-counter">Lesson 06 / 14</span>
+    <button class="theme-toggle" type="button" aria-label="Toggle theme">🌙</button>
+  </div>
+</header>
+<div class="progress-rail"><div class="progress-fill"></div></div>
+
+<main class="lesson">
+<article>
+  <p class="eyebrow">Lesson 06 · TCP fundamentals</p>
+  <h1>TCB &amp; state machine skeleton</h1>
+  <p class="lead">Before we touch the wire again, we model TCP's brain: the <strong>state machine</strong> and the <strong>Transmission Control Block</strong>. This lesson is pure data modeling — no I/O, no packets. The payoff is that all of TCP's tricky sequence-number logic becomes unit-testable without sockets.</p>
+
+  <h2>Background</h2>
+
+  <h3>The TCP state machine <span class="pill">RFC 793 §3.2</span></h3>
+  <p>A TCP connection is a finite state machine with <strong>11 states</strong>. Grouped by phase:</p>
+
+  <div class="fsm">
+    <div class="fsm-row">
+      <span class="state s-start">CLOSED</span>
+    </div>
+    <div class="edge"><span class="arrow">↓</span><span>passive open / active open</span></div>
+    <div class="fsm-row">
+      <span class="state s-syn">LISTEN</span>
+      <span class="state s-syn">SYN-SENT</span>
+      <span class="state s-syn">SYN-RECEIVED</span>
+    </div>
+    <div class="edge"><span class="arrow">↓</span><span>handshake completes</span></div>
+    <div class="fsm-row">
+      <span class="state s-open">ESTABLISHED</span>
+    </div>
+    <div class="edge"><span class="arrow">↓</span><span>one side closes</span></div>
+    <div class="fsm-row">
+      <span class="state s-closing">FIN-WAIT-1</span>
+      <span class="state s-closing">FIN-WAIT-2</span>
+      <span class="state s-closing">CLOSING</span>
+      <span class="state s-closing">CLOSE-WAIT</span>
+      <span class="state s-closing">LAST-ACK</span>
+    </div>
+    <div class="edge"><span class="arrow">↓</span><span>final ACKs settle</span></div>
+    <div class="fsm-row">
+      <span class="state s-wait">TIME-WAIT</span>
+      <span class="state s-start">CLOSED</span>
+    </div>
+    <div class="fsm-legend">
+      <span><i style="border-color:var(--f-blue)"></i> handshake</span>
+      <span><i style="border-color:var(--f-green)"></i> data transfer</span>
+      <span><i style="border-color:var(--f-amber)"></i> closing</span>
+      <span><i style="border-color:var(--f-violet)"></i> lingering</span>
+    </div>
+  </div>
+
+  <p>The canonical diagram, with the exact transitions you'll implement across L07–L13:</p>
+  <figure class="diagram">
+<pre class="ascii">                              +---------+
+                              |  CLOSED |
+                              +---------+
+                          (passive open)  (active open: send SYN)
+                                |               |
+                                v               v
+                          +---------+      +----------+
+                          | LISTEN  |      | SYN-SENT |
+                          +---------+      +----------+
+                   (recv SYN: send SYN/ACK)|     |
+                                |          (recv SYN/ACK: send ACK)
+                                v          v
+                          +--------------+
+                          | SYN-RECEIVED |
+                          +--------------+
+                          (recv ACK)  |
+                                      v
+                          +--------------+
+                          | ESTABLISHED  |  &lt;─── data transfer happens here
+                          +--------------+
+            (close: send FIN) |        | (recv FIN: send ACK)
+                              v        v
+                       +-----------+  +------------+
+                       |FIN-WAIT-1 |  | CLOSE-WAIT |
+                       +-----------+  +------------+
+                          |    |            | (close: send FIN)
+       (recv ACK of FIN)  |    |(recv FIN)  v
+                          v    |       +----------+
+                  +-----------+|       | LAST-ACK |
+                  |FIN-WAIT-2 ||       +----------+
+                  +-----------+|            | (recv ACK)
+                          |    v            v
+                          | +--------+   +--------+
+                          | |CLOSING |   | CLOSED |
+                          | +--------+
+                          |    |(recv ACK)
+                          v    v
+                       +----------+
+                       |TIME-WAIT | (wait 2*MSL, then CLOSED)
+                       +----------+</pre>
+    <figcaption>RFC 793 §3.2. Don't try to absorb every transition now — what you need this lesson is the <b>set of states</b> as a Go type.</figcaption>
+  </figure>
+
+  <h3>The Transmission Control Block</h3>
+  <p>The TCB is the per-connection state. RFC 793 §3.2 defines the sequence variables it must track.</p>
+
+  <p><strong>Send Sequence Space</strong> — four regions divided by <code>SND.UNA</code> and <code>SND.NXT</code>:</p>
+  <figure class="diagram">
+    <div style="display:flex;font-family:var(--font-mono);font-size:.78rem;margin:1rem 1.1rem;border-radius:8px;overflow:hidden;border:1px solid var(--border)">
+      <div style="flex:1;padding:.7rem .4rem;text-align:center;background:color-mix(in srgb,var(--f-slate) 16%,var(--bg-elev))"><b>1</b><br>acked</div>
+      <div style="flex:1;padding:.7rem .4rem;text-align:center;background:color-mix(in srgb,var(--f-amber) 18%,var(--bg-elev))"><b>2</b><br>sent, unacked</div>
+      <div style="flex:1;padding:.7rem .4rem;text-align:center;background:color-mix(in srgb,var(--f-green) 18%,var(--bg-elev))"><b>3</b><br>may send next</div>
+      <div style="flex:1;padding:.7rem .4rem;text-align:center;background:color-mix(in srgb,var(--f-slate) 10%,var(--bg-elev));opacity:.7"><b>4</b><br>not yet allowed</div>
+    </div>
+    <div style="display:flex;font-family:var(--font-mono);font-size:.68rem;color:var(--fg-muted);margin:0 1.1rem 1rem;justify-content:space-between">
+      <span>↑ SND.UNA</span><span>↑ SND.NXT</span><span>↑ SND.UNA + SND.WND</span>
+    </div>
+    <figcaption>The send window: bytes 1 are acknowledged, 2 are in flight, 3 are within the window and free to send, 4 are beyond the window.</figcaption>
+  </figure>
+  <ul>
+    <li><code>SND.UNA</code> — oldest unacknowledged sequence number.</li>
+    <li><code>SND.NXT</code> — next sequence number to send.</li>
+    <li><code>SND.WND</code> — send window (how much the peer will accept).</li>
+    <li><code>ISS</code> — initial send sequence number (chosen at connection start).</li>
+  </ul>
+
+  <p><strong>Receive Sequence Space</strong> — three regions divided by <code>RCV.NXT</code>:</p>
+  <figure class="diagram">
+    <div style="display:flex;font-family:var(--font-mono);font-size:.78rem;margin:1rem 1.1rem;border-radius:8px;overflow:hidden;border:1px solid var(--border)">
+      <div style="flex:1;padding:.7rem .4rem;text-align:center;background:color-mix(in srgb,var(--f-slate) 16%,var(--bg-elev))"><b>1</b><br>received &amp; acked</div>
+      <div style="flex:1;padding:.7rem .4rem;text-align:center;background:color-mix(in srgb,var(--f-cyan) 18%,var(--bg-elev))"><b>2</b><br>may receive</div>
+      <div style="flex:1;padding:.7rem .4rem;text-align:center;background:color-mix(in srgb,var(--f-slate) 10%,var(--bg-elev));opacity:.7"><b>3</b><br>not yet allowed</div>
+    </div>
+    <div style="display:flex;font-family:var(--font-mono);font-size:.68rem;color:var(--fg-muted);margin:0 1.1rem 1rem;justify-content:space-between">
+      <span>↑ RCV.NXT</span><span style="margin-left:auto">↑ RCV.NXT + RCV.WND</span>
+    </div>
+    <figcaption>The receive window: everything below RCV.NXT is in, region 2 is the open window, region 3 is the future you won't accept yet.</figcaption>
+  </figure>
+  <ul>
+    <li><code>RCV.NXT</code> — next sequence number expected from the peer.</li>
+    <li><code>RCV.WND</code> — receive window (how much you'll accept).</li>
+    <li><code>IRS</code> — initial receive sequence number (the peer's ISS, learned from their SYN).</li>
+  </ul>
+
+  <h3>Why a separate <code>tcb</code> package?</h3>
+  <p>This is the SOLID payoff of the project. <code>tcb</code> is <strong>pure state</strong>: given the current TCB and an incoming segment's header, it can decide what the new state should be and what to send — all as plain arithmetic, no file descriptors, no goroutines. That makes it trivially unit-testable. The <code>tcp</code> package (L07+) will wire <code>tcb</code> to the TUN device.</p>
+  <div class="callout callout--warn">
+    <span class="callout-title">The purity lint</span>
+    <p>The <code>/review</code> lint <code>tcb-no-io-imports</code> enforces purity: if <code>internal/tcb</code> imports <code>os</code>, <code>net</code>, <code>syscall</code>, or <code>golang.org/x/sys</code>, the check fails. (<code>net/netip</code> is allowed — it's a pure value type.)</p>
+  </div>
+
+  <h2>What to implement</h2>
+
+  <h3><code>internal/tcb/state.go</code></h3>
+  <div class="code" data-lang="go">
+    <div class="code-bar"><span class="code-lang">go</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>package tcb
+
+// State is a TCP connection state per RFC 793 §3.2.
+type State int
+
+const (
+    StateClosed State = iota
+    StateListen
+    StateSynSent
+    StateSynReceived
+    StateEstablished
+    StateFinWait1
+    StateFinWait2
+    StateCloseWait
+    StateClosing
+    StateLastAck
+    StateTimeWait
+)
+
+// String returns the RFC name, e.g. "SYN-RECEIVED".
+func (s State) String() string</code></pre>
+  </div>
+
+  <h3><code>internal/tcb/tcb.go</code></h3>
+  <div class="code" data-lang="go">
+    <div class="code-bar"><span class="code-lang">go</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>package tcb
+
+import "net/netip"
+
+// Send holds the send sequence space (RFC 793 §3.2).
+type Send struct {
+    UNA uint32 // oldest unacknowledged
+    NXT uint32 // next to send
+    WND uint16 // send window
+    ISS uint32 // initial send sequence
+}
+
+// Recv holds the receive sequence space.
+type Recv struct {
+    NXT uint32 // next expected
+    WND uint16 // receive window
+    IRS uint32 // initial receive sequence
+}
+
+// TCB is the Transmission Control Block for one connection.
+type TCB struct {
+    State State
+    Local  netip.AddrPort
+    Remote netip.AddrPort
+    Snd Send
+    Rcv Recv
+}</code></pre>
+  </div>
+
+  <p>You may add small helpers you'll want later, but keep them pure:</p>
+  <ul>
+    <li><code>func (t *TCB) String() string</code> for debugging.</li>
+    <li>A <code>Key</code> type or method returning the 4-tuple for use as a map key in L07 (<code>netip.AddrPort</code> pairs are comparable, so a struct of two of them works as a map key directly).</li>
+  </ul>
+
+  <h3><code>internal/tcb/state_test.go</code></h3>
+  <ul>
+    <li>Assert <code>State(i).String()</code> returns the correct RFC name for all 11 states.</li>
+    <li>Assert an out-of-range State doesn't panic (returns something like <code>"State(99)"</code>).</li>
+    <li>A trivial TCB construction test (set fields, read them back) — mostly to anchor the package.</li>
+  </ul>
+
+  <h2>How to test it yourself</h2>
+  <div class="code" data-lang="bash">
+    <div class="code-bar"><span class="code-lang">bash</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>go test ./internal/tcb/... -v
+go list -deps ./internal/tcb/... | grep -E '^(os|net|syscall)$' &amp;&amp; echo "IMPURE" || echo "pure"</code></pre>
+  </div>
+  <p>The second command should print <code>pure</code>.</p>
+
+  <div class="donewhen">
+    <h2>Done when</h2>
+    <ul>
+      <li>All 11 states exist with correct <code>String()</code> output.</li>
+      <li><code>TCB</code>, <code>Send</code>, <code>Recv</code> types match the RFC variable names.</li>
+      <li>The <code>tcb</code> package imports nothing from <code>os</code>/<code>net</code>/<code>syscall</code>/<code>golang.org/x/sys</code>.</li>
+      <li>Tests pass.</li>
+    </ul>
+  </div>
+
+  <details class="hints">
+    <summary>Stuck? Reveal hints (they escalate)</summary>
+    <ol>
+      <li>RFC 793 §3.2 has the canonical state diagram. There are 11 states: CLOSED, LISTEN, SYN-SENT, SYN-RECEIVED, ESTABLISHED, FIN-WAIT-1, FIN-WAIT-2, CLOSE-WAIT, CLOSING, LAST-ACK, TIME-WAIT. Model them as an enum (<code>type State int</code> + iota constants).</li>
+      <li>The TCB holds the send/receive sequence variables. RFC 793 §3.2 names them: SND.UNA, SND.NXT, SND.WND, ISS (send), RCV.NXT, RCV.WND, IRS (receive). Group them into a Send and Recv struct — it reads better than 8 loose fields.</li>
+      <li>This package must stay PURE — no <code>os</code>, <code>net</code>, <code>syscall</code> imports. It's just state and arithmetic. The /review lint enforces this. If you're tempted to import <code>net</code>, you want <code>net/netip</code> for addresses instead (that's allowed; it's a value type).</li>
+      <li>Give State a <code>String()</code> method covering all 11 states. The /review check and your own debugging both rely on it. A missing case returning "State(7)" is a smell.</li>
+      <li>Don't implement transitions yet — just the types and a way to hold the 4-tuple (local addr/port, remote addr/port) plus the sequence variables. Behavior comes in L07+.</li>
+    </ol>
+  </details>
+
+  <div class="review-cta">Run <code>/review</code>.</div>
+</article>
+</main>
+
+<nav class="lesson-nav">
+  <a class="prev" href="05-tcp-header.html"><span class="dir">← Prev</span><span class="ttl">05 · TCP header parse/serialize</span></a>
+  <a class="next" href="07-passive-open.html"><span class="dir">Next →</span><span class="ttl">07 · Passive open</span></a>
+</nav>
+
+<footer class="site">TCP From Scratch · build a TCP/IP stack in Go, one lesson at a time</footer>
+
+<script src="assets/lesson.js"></script>
+</body>
+</html>

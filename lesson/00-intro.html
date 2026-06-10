@@ -1,0 +1,209 @@
+<!--lesson-meta
+id: "00"
+title: Intro & Setup
+requires:
+  files:
+    - go.mod
+hints:
+  - "Lesson 00 asks for `go mod init <module-path>`. Pick a path you'll keep stable across lessons — `github.com/<your-user>/tcp-from-scratch` is fine even if you never push it."
+  - "If `go mod init` complains the file exists, you're done — run /review."
+  - "Open a shell with `make dev`. The container has `go`, `tcpdump`, `iproute2`, and `/dev/net/tun` ready. If `make dev` fails, Docker isn't running."
+  - "Run /review to see the exact missing file."
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 00 — Intro &amp; Setup · TCP From Scratch</title>
+<link rel="stylesheet" href="assets/lesson.css">
+<script>(function(){try{var t=localStorage.getItem("tcpfs-theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">TCP From Scratch</a>
+  <div class="topbar-right">
+    <span class="lesson-counter">Lesson 00 / 14</span>
+    <button class="theme-toggle" type="button" aria-label="Toggle theme">🌙</button>
+  </div>
+</header>
+<div class="progress-rail"><div class="progress-fill"></div></div>
+
+<main class="lesson">
+<article>
+  <p class="eyebrow">Lesson 00 · Foundations</p>
+  <h1>Intro &amp; Setup</h1>
+  <p class="lead">By the end of this tutorial you will have written, line by line in Go, a working TCP stack that performs a real 3-way handshake with a Python HTTP server, sends a <code>GET /</code>, receives the response, and closes cleanly — using your own IPv4 + TCP, not the kernel's.</p>
+  <p>This first lesson is just about getting your environment ready and understanding the shape of what's coming.</p>
+
+  <h2>Background</h2>
+
+  <h3>Where TCP lives in the stack</h3>
+  <figure class="diagram">
+<pre class="ascii">  ┌──────────────────────────────┐
+  │  Application (your HTTP req)  │
+  ├──────────────────────────────┤
+  │  TCP  ← you implement this    │   ← lessons 05–14
+  ├──────────────────────────────┤
+  │  IPv4 ← you implement this    │   ← lessons 02–04
+  ├──────────────────────────────┤
+  │  Ethernet (skipped)           │
+  ├──────────────────────────────┤
+  │  Physical                     │
+  └──────────────────────────────┘</pre>
+    <figcaption>The layers you'll build sit between the application and the (skipped) Ethernet framing.</figcaption>
+  </figure>
+
+  <p>A real OS handles all of this in the kernel. <strong>Userspace programs</strong> like <code>curl</code> talk to the kernel via the <strong>socket API</strong> (<code>socket()</code>, <code>connect()</code>, <code>send()</code>, <code>recv()</code>). When you call <code>connect()</code>, the kernel does the SYN/SYN-ACK/ACK handshake for you, then <code>send()</code> writes bytes that the kernel chunks into TCP segments, wraps in IP packets, and hands to the NIC driver.</p>
+  <p>We're going to do all of that ourselves, in Go, in userspace.</p>
+
+  <h3>How do we get raw packets out of the kernel?</h3>
+  <p>We use a <strong>TUN device</strong>. A TUN device is a virtual network interface that looks like a real NIC to the kernel, but its "wire" is actually a file descriptor in userspace.</p>
+  <ul>
+    <li>The kernel routes packets to the TUN device based on its routing table (just like any other interface).</li>
+    <li>When the kernel writes a packet to it, <strong>you read raw bytes</strong> from <code>/dev/net/tun</code>.</li>
+    <li>When <strong>you write raw bytes</strong> to <code>/dev/net/tun</code>, the kernel sees them as if a NIC delivered them.</li>
+  </ul>
+  <p>The bytes are L3 (network layer) — meaning <strong>IPv4 packets with no Ethernet framing</strong>. That's why we don't need to implement Ethernet or ARP. (TAP devices are the L2 variant — we're not using those.)</p>
+
+  <figure class="diagram">
+<pre class="ascii">   ┌─────────────── Your Go process ────────────────┐
+   │     (your TCP stack — address 10.0.0.2)         │
+   │   read(fd)  ──► [raw IPv4 packet bytes] ──► you │
+   │   write(fd) ◄── [raw IPv4 packet bytes] ◄── you │
+   └───────────────────────┬─────────────────────────┘
+                           │  (file descriptor)
+                           ▼
+                 ┌───────────────────────────┐
+                 │  Linux kernel             │
+                 │  tun0 interface = 10.0.0.1│  ◄── shows up in `ip link`
+                 │  (its OWN TCP stack is    │
+                 │   the "peer" you talk to) │
+                 └───────────────────────────┘</pre>
+    <figcaption>A TUN device bridges your userspace process and the kernel — the kernel's own stack becomes your peer.</figcaption>
+  </figure>
+
+  <h3>The network model (important — read this twice)</h3>
+  <p>We do <strong>not</strong> need a network namespace, a second host, or any forwarding. The trick is how a TUN device routes:</p>
+  <ul>
+    <li>The kernel writes a packet to the tun fd whenever it <strong>routes a packet out the tun0 interface</strong>. With <code>ip route</code> sending <code>10.0.0.0/24</code> to <code>tun0</code>, any packet destined to a <code>10.0.0.x</code> address that is <em>not local</em> gets handed to your program.</li>
+    <li>A TUN interface's <strong>own</strong> address (we'll use <code>10.0.0.1</code>) is <em>local</em> — packets to it are delivered to the kernel's own stack, not to the fd.</li>
+  </ul>
+  <p>So we split the subnet:</p>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Address</th><th>Who</th><th>Role</th></tr></thead>
+    <tbody>
+      <tr><td><code>10.0.0.1</code></td><td>the kernel (tun0's interface address)</td><td>the <strong>peer</strong> — runs <code>nc</code>, <code>ping</code>, <code>python3 -m http.server</code></td></tr>
+      <tr><td><code>10.0.0.2</code></td><td><strong>your</strong> TCP stack</td><td>the address your code claims; routed to the tun fd</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>This means <strong>the Linux kernel's own TCP stack is your test peer</strong>, for free:</p>
+  <ul>
+    <li><em>Server lessons</em> — your stack listens on <code>10.0.0.2:PORT</code>; you test with <code>nc 10.0.0.2 PORT</code> (the kernel is the client).</li>
+    <li><em>Client lessons</em> — the kernel runs a real server on <code>10.0.0.1</code> (e.g. <code>python3 -m http.server --bind 10.0.0.1</code>); your stack dials <code>10.0.0.1</code>.</li>
+  </ul>
+
+  <div class="callout callout--tip">
+    <span class="callout-title">Free end-to-end validator</span>
+    <p>The kernel <strong>silently drops TCP segments with a bad checksum</strong>. So if the kernel ever replies to your stack, your checksums were correct.</p>
+  </div>
+
+  <p>The helper script <code>scripts/net-up.sh</code> sets all this up (creates a persistent <code>tun0</code>, assigns <code>10.0.0.1/24</code>, brings it up). <code>scripts/net-down.sh</code> tears it down.</p>
+
+  <h3>Tools you'll use a lot</h3>
+  <ul>
+    <li><code>ip link</code>, <code>ip addr</code>, <code>ip route</code> — Linux network configuration (instead of <code>ifconfig</code>).</li>
+    <li><code>ip tuntap</code> / <code>ip addr</code> / <code>ip route</code> — create and configure the TUN device.</li>
+    <li><code>tcpdump -ni tun0</code> — watch raw packets fly past. This is your <strong>truth oracle</strong>: if <code>tcpdump</code> says your packet is wrong, your packet is wrong.</li>
+    <li><code>tshark</code> — terminal Wireshark; useful for pcap analysis.</li>
+    <li><code>nc</code> (netcat) — open arbitrary TCP listeners/clients for testing.</li>
+  </ul>
+  <p>You don't need to know these tools yet — each lesson teaches the ones it needs.</p>
+
+  <h3>What you'll write (the package layout)</h3>
+  <figure class="diagram">
+<pre class="ascii">internal/
+  tun/        opens /dev/net/tun, reads/writes raw bytes (io.ReadWriteCloser)
+  checksum/   RFC 1071 one's-complement checksum
+  ipv4/       parse + marshal IPv4 headers
+  tcp/        parse + marshal TCP headers + dialer/listener + demux
+  tcb/        pure state: TCP FSM, sequence-number bookkeeping, buffers
+cmd/
+  tcpdump-lite/   prints raw packets (L01)
+  icmp-echo/      replies to ping (L04)
+  tcp-echo/       a TCP echo server (L09–L11)
+  curl-lite/      the capstone HTTP/1.0 client (L14)</pre>
+    <figcaption>The boundaries matter — they're what make the code testable.</figcaption>
+  </figure>
+  <p>The boundaries matter. <code>tcb</code> will not be allowed to import <code>os</code> or <code>net</code> — it's pure state. <code>tun</code> will be the only place that touches a file descriptor. This separation is what makes the code testable.</p>
+
+  <h2>What to implement</h2>
+  <p>This lesson has only one tangible artifact: <strong>initialize the Go module</strong>.</p>
+  <ol>
+    <li>Drop into the dev container:
+      <div class="code" data-lang="bash">
+        <div class="code-bar"><span class="code-lang">bash</span><button class="copy-btn" type="button">copy</button></div>
+        <pre><code>make dev</code></pre>
+      </div>
+    </li>
+    <li>Inside the container, at <code>/workspace</code>:
+      <div class="code" data-lang="bash">
+        <div class="code-bar"><span class="code-lang">bash</span><button class="copy-btn" type="button">copy</button></div>
+        <pre><code>go mod init github.com/&lt;your-name&gt;/tcp-from-scratch</code></pre>
+      </div>
+      The module path doesn't matter as long as it's consistent across lessons. Pick something and stick with it.
+    </li>
+    <li>Verify <code>go.mod</code> exists at the repo root.</li>
+  </ol>
+  <p>That's it for code. Most of this lesson is reading.</p>
+
+  <h2>How to test it yourself</h2>
+  <p>Inside the dev container, run a quick sanity check that the network plumbing is reachable:</p>
+  <div class="code" data-lang="bash">
+    <div class="code-bar"><span class="code-lang">bash</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>ls -la /dev/net/tun        # should print a character device
+ip link                    # should list lo + your container's eth0
+sudo ./scripts/net-up.sh   # should create tun0 = 10.0.0.1/24
+ip addr show tun0          # confirm tun0 is up with 10.0.0.1
+sudo ./scripts/net-down.sh # clean up
+sudo tcpdump --version     # should print a version
+go version                 # should be 1.22 or newer</code></pre>
+  </div>
+  <p>If any of those fail, fix them before moving on — you'll need all of them later.</p>
+
+  <div class="donewhen">
+    <h2>Done when</h2>
+    <ul>
+      <li><code>go.mod</code> exists at the repo root.</li>
+      <li><code>make dev</code> succeeds and drops you into a Linux shell with <code>go</code>, <code>tcpdump</code>, <code>ip</code>, and <code>python3</code> available.</li>
+      <li><code>sudo ./scripts/net-up.sh</code> brings up <code>tun0</code> with <code>10.0.0.1/24</code> (then <code>net-down.sh</code> removes it).</li>
+      <li>You can articulate (to yourself, no test for this): what a TUN device is, what L3 means, why <code>10.0.0.1</code> is the kernel/peer and <code>10.0.0.2</code> is your stack, and where TCP sits relative to IP.</li>
+    </ul>
+  </div>
+
+  <details class="hints">
+    <summary>Stuck? Reveal hints (they escalate)</summary>
+    <ol>
+      <li>Lesson 00 asks for <code>go mod init &lt;module-path&gt;</code>. Pick a path you'll keep stable across lessons — <code>github.com/&lt;your-user&gt;/tcp-from-scratch</code> is fine even if you never push it.</li>
+      <li>If <code>go mod init</code> complains the file exists, you're done — run <code>/review</code>.</li>
+      <li>Open a shell with <code>make dev</code>. The container has <code>go</code>, <code>tcpdump</code>, <code>iproute2</code>, and <code>/dev/net/tun</code> ready. If <code>make dev</code> fails, Docker isn't running.</li>
+      <li>Run <code>/review</code> to see the exact missing file.</li>
+    </ol>
+  </details>
+
+  <div class="review-cta">When you think you're done, run <code>/review</code>.</div>
+</article>
+</main>
+
+<nav class="lesson-nav">
+  <a class="prev disabled" href="index.html"><span class="dir">← Back</span><span class="ttl">Index</span></a>
+  <a class="next" href="01-tun-device.html"><span class="dir">Next →</span><span class="ttl">01 · Opening a TUN device</span></a>
+</nav>
+
+<footer class="site">TCP From Scratch · build a TCP/IP stack in Go, one lesson at a time</footer>
+
+<script src="assets/lesson.js"></script>
+</body>
+</html>

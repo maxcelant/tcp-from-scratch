@@ -1,0 +1,210 @@
+<!--lesson-meta
+id: "11"
+title: Retransmission (RTO)
+requires:
+  files:
+    - internal/tcb/retransmit.go
+    - internal/tcb/retransmit_test.go
+  symbols:
+    - { pkg: ./internal/tcb, name: Clock }
+  tests:
+    - ./internal/tcb/...
+  lints:
+    - tcb-no-io-imports
+  integration: scripts/check-L11.sh
+hints:
+  - "When you send a segment carrying data (or a SYN/FIN), record it in a retransmit queue: (seq, payload, deadline). When an ACK advances SND.UNA past a segment's last byte, remove it. If a segment's deadline passes before it's ACKed, resend it. RFC 793 §3.7, RFC 6298 for RTO."
+  - "Start with a fixed RTO (e.g. 1 second) before attempting Jacobson/Karels estimation. Get retransmission working, THEN improve the timer. RFC 6298 §2 gives the estimator if you want it: SRTT, RTTVAR, RTO = SRTT + 4*RTTVAR."
+  - "To make timing testable without sleeping in tests, inject a Clock interface (Now() time.Time, and a way to schedule/fire timers — or just Now() plus a manual 'tick' the test drives). This is the one place premature abstraction pays off: deterministic time."
+  - "Common bug: retransmitting a segment but advancing SND.NXT again. Retransmission reuses the SAME seq; don't bump SND.NXT on a resend."
+  - "Common bug: never cancelling timers, so you resend data the peer already ACKed. Make sure Acked() prunes the retransmit queue."
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 11 — Retransmission (RTO) · TCP From Scratch</title>
+<link rel="stylesheet" href="assets/lesson.css">
+<script>(function(){try{var t=localStorage.getItem("tcpfs-theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">TCP From Scratch</a>
+  <div class="topbar-right">
+    <span class="lesson-counter">Lesson 11 / 14</span>
+    <button class="theme-toggle" type="button" aria-label="Toggle theme">🌙</button>
+  </div>
+</header>
+<div class="progress-rail"><div class="progress-fill"></div></div>
+
+<main class="lesson">
+<article>
+  <p class="eyebrow">Lesson 11 · Reliability &amp; teardown</p>
+  <h1>Retransmission (RTO)</h1>
+  <p class="lead">Networks drop packets. Until now your stack assumed perfect delivery — if a segment is lost, it's lost forever and the connection stalls. Now you'll add <strong>retransmission</strong>: track unacknowledged segments, and resend them if they aren't ACKed within a timeout.</p>
+  <p>This is the feature that makes TCP <em>reliable</em>. (Note: this is NOT congestion control — we're not adjusting send rate based on loss. We just resend lost segments.)</p>
+
+  <h2>Background</h2>
+
+  <h3>The retransmission timer (RFC 793 §3.7, RFC 6298)</h3>
+  <p>The rule:</p>
+  <ol>
+    <li>When you send a segment that consumes sequence space (data, SYN, or FIN), start a <strong>retransmission timer</strong> for it with some timeout (the <strong>RTO</strong>, retransmission timeout).</li>
+    <li>If the segment is ACKed (SND.UNA advances past its last byte) before the timer fires, cancel the timer.</li>
+    <li>If the timer fires first, <strong>resend the segment</strong> (same seq, same bytes) and restart the timer (typically with a doubled RTO — "exponential backoff").</li>
+  </ol>
+
+  <h3>Picking the RTO</h3>
+  <p>Start dead simple: <strong>fixed RTO = 1 second</strong>. Get the mechanism working. Then, if you want (optional, not required by <code>/review</code>), implement the RFC 6298 estimator:</p>
+
+  <div class="code" data-lang="text">
+    <div class="code-bar"><span class="code-lang">text</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>On first RTT measurement R:
+    SRTT   = R
+    RTTVAR = R/2
+    RTO    = SRTT + max(G, 4*RTTVAR)        // G = clock granularity
+
+On subsequent measurements R':
+    RTTVAR = (1-β)*RTTVAR + β*|SRTT - R'|   // β = 1/4
+    SRTT   = (1-α)*SRTT   + α*R'            // α = 1/8
+    RTO    = SRTT + max(G, 4*RTTVAR)
+
+Clamp RTO to [1s, 60s].</code></pre>
+  </div>
+
+  <p>You measure R by timestamping when a segment is sent and when its ACK arrives. (Skip measurement on retransmitted segments — Karn's algorithm.)</p>
+
+  <h3>Making time testable: the Clock interface</h3>
+  <p>Retransmission is time-dependent, which makes it painful to test if you call <code>time.Now()</code> and <code>time.Sleep</code> directly. Inject a clock:</p>
+
+  <div class="code" data-lang="go">
+    <div class="code-bar"><span class="code-lang">go</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>package tcb
+
+// Clock abstracts time so retransmission logic is testable.
+type Clock interface {
+    Now() time.Time
+}</code></pre>
+  </div>
+
+  <p>In production you pass a real clock (<code>time.Now()</code>). In tests you pass a fake clock you advance manually, so you can assert "after 1s with no ACK, the segment is queued for resend" without any real sleeping.</p>
+
+  <div class="callout callout--note">
+    <span class="callout-title">Why a Clock interface here</span>
+    <p>This is the one place in the project where introducing an interface up front is justified — deterministic time is worth it. (Contrast with earlier lessons where we avoided premature interfaces.)</p>
+  </div>
+
+  <h3>The retransmit queue</h3>
+
+  <div class="code" data-lang="go">
+    <div class="code-bar"><span class="code-lang">go</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>package tcb
+
+type rtxEntry struct {
+    seq      uint32
+    payload  []byte
+    flags    uint8     // so SYN/FIN can be retransmitted too
+    deadline time.Time
+    sentAt   time.Time // for RTT measurement
+}
+
+type RetransmitQueue struct {
+    clock Clock
+    rto   time.Duration
+    // ordered entries (slice or min-heap by deadline)
+}
+
+func (q *RetransmitQueue) Track(seq uint32, flags uint8, payload []byte)
+func (q *RetransmitQueue) Ack(snd_una uint32)        // prune acked entries
+func (q *RetransmitQueue) Expired(now time.Time) []rtxEntry  // due for resend</code></pre>
+  </div>
+
+  <p>The <code>tcp</code> package runs a goroutine (a <code>time.Ticker</code> every ~200ms, say) that calls <code>Expired(clock.Now())</code> and resends each returned entry through the existing send path.</p>
+  <p><code>tcb</code> stays pure: it imports <code>time</code> and <code>sync</code> (both allowed — not I/O) but never <code>os</code>/<code>net</code>/<code>syscall</code>. The actual resend (writing to the device) happens in <code>tcp</code>.</p>
+
+  <h2>What to implement</h2>
+
+  <h3><code>internal/tcb/retransmit.go</code></h3>
+  <ul>
+    <li>The <code>Clock</code> interface.</li>
+    <li>A real clock implementation (<code>type realClock struct{}; func (realClock) Now() time.Time { return time.Now() }</code>) — or put the real one in the <code>tcp</code> package; your call, but the <em>interface</em> lives in <code>tcb</code>.</li>
+    <li><code>RetransmitQueue</code> with <code>Track</code>, <code>Ack</code>, <code>Expired</code>.</li>
+    <li>Optional: RFC 6298 RTO estimation.</li>
+  </ul>
+
+  <h3><code>internal/tcb/retransmit_test.go</code></h3>
+  <p>Using a fake clock:</p>
+  <ul>
+    <li>Track a segment, advance the fake clock past RTO without ACK → <code>Expired</code> returns it.</li>
+    <li>Track a segment, <code>Ack</code> it, advance clock → <code>Expired</code> returns nothing.</li>
+    <li>Exponential backoff: after a resend, the new deadline is further out.</li>
+    <li>Sequence wraparound in <code>Ack</code> works.</li>
+  </ul>
+
+  <h3>Wire it into <code>internal/tcp</code></h3>
+  <ul>
+    <li>After <code>sendData</code> sends a segment, call <code>q.Track(...)</code>.</li>
+    <li>After advancing SND.UNA on ACK, call <code>q.Ack(SND.UNA)</code>.</li>
+    <li>A goroutine periodically resends <code>q.Expired(now)</code> segments (reusing the seq, NOT advancing SND.NXT).</li>
+  </ul>
+
+  <div class="callout callout--bug">
+    <span class="callout-title">Common bug</span>
+    <p>Retransmitting a segment but advancing SND.NXT again. Retransmission reuses the <strong>same</strong> seq; don't bump SND.NXT on a resend.</p>
+  </div>
+
+  <div class="callout callout--bug">
+    <span class="callout-title">Common bug</span>
+    <p>Never cancelling timers, so you resend data the peer already ACKed. Make sure <code>Ack()</code> prunes the retransmit queue.</p>
+  </div>
+
+  <h2>How to test it yourself</h2>
+  <p>The integration check deliberately drops packets with <code>iptables</code>:</p>
+
+  <div class="code" data-lang="bash">
+    <div class="code-bar"><span class="code-lang">bash</span><button class="copy-btn" type="button">copy</button></div>
+<pre><code>go build ./...
+sudo ./scripts/net-up.sh
+# The check installs an iptables rule that drops ~30% of the segments coming
+# FROM your stack (so the kernel can't ACK them), then runs a transfer through
+# tcp-echo and asserts it still completes.
+sudo ./scripts/check-L11.sh</code></pre>
+  </div>
+
+  <p>Manually, you can watch retransmits in <code>make tcpdump</code>: with loss induced, you'll see the same seq number sent more than once, and the transfer still completing.</p>
+
+  <div class="donewhen">
+    <h2>Done when</h2>
+    <ul>
+      <li><code>RetransmitQueue</code> passes its unit tests with a fake clock (no real sleeping in tests).</li>
+      <li><code>Clock</code> interface exists in <code>tcb</code> and the package stays pure.</li>
+      <li>The integration check <code>scripts/check-L11.sh</code> completes a transfer through <code>tcp-echo</code> <strong>with ~30% packet loss induced</strong>, and tshark detects retransmitted segments.</li>
+    </ul>
+  </div>
+
+  <details class="hints">
+    <summary>Stuck? Reveal hints (they escalate)</summary>
+    <ol>
+      <li>When you send a segment carrying data (or a SYN/FIN), record it in a retransmit queue: (seq, payload, deadline). When an ACK advances SND.UNA past a segment's last byte, remove it. If a segment's deadline passes before it's ACKed, resend it. RFC 793 §3.7, RFC 6298 for RTO.</li>
+      <li>Start with a fixed RTO (e.g. 1 second) before attempting Jacobson/Karels estimation. Get retransmission working, THEN improve the timer. RFC 6298 §2 gives the estimator if you want it: SRTT, RTTVAR, RTO = SRTT + 4*RTTVAR.</li>
+      <li>To make timing testable without sleeping in tests, inject a Clock interface (Now() time.Time, and a way to schedule/fire timers — or just Now() plus a manual 'tick' the test drives). This is the one place premature abstraction pays off: deterministic time.</li>
+      <li>Common bug: retransmitting a segment but advancing SND.NXT again. Retransmission reuses the SAME seq; don't bump SND.NXT on a resend.</li>
+      <li>Common bug: never cancelling timers, so you resend data the peer already ACKed. Make sure Acked() prunes the retransmit queue.</li>
+    </ol>
+  </details>
+
+  <div class="review-cta">Run <code>/review</code>.</div>
+</article>
+</main>
+
+<nav class="lesson-nav">
+  <a class="prev" href="10-sending-data.html"><span class="dir">← Prev</span><span class="ttl">10 · Sending data</span></a>
+  <a class="next" href="12-active-open.html"><span class="dir">Next →</span><span class="ttl">12 · Active open (client)</span></a>
+</nav>
+
+<footer class="site">TCP From Scratch · build a TCP/IP stack in Go, one lesson at a time</footer>
+
+<script src="assets/lesson.js"></script>
+</body>
+</html>

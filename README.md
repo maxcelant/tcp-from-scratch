@@ -4,7 +4,7 @@ Build a working userspace TCP stack in Go, one lesson at a time. By the end you'
 
 ## What this is
 
-A guided, hands-on tutorial split into **14 bite-sized lessons** under [`lesson/`](./lesson). Each lesson is a markdown file that explains the background (concepts + RFC pointers), tells you what to implement, shows you how to test it manually with `tcpdump`/`nc`, and lists what the `/review` skill will check before you move on.
+A guided, hands-on tutorial split into **14 bite-sized lessons** under [`lesson/`](./lesson). Each lesson is a self-contained HTML page (open [`lesson/index.html`](./lesson/index.html) in a browser) that explains the background (concepts + RFC pointers with rich diagrams), tells you what to implement, shows you how to test it manually with `tcpdump`/`nc`, and lists what the `/review` skill will check before you move on.
 
 **You write every line of Go code.** The repository scaffolds the dev environment, lesson content, test fixtures, and verification scripts — but no `internal/*.go` or `cmd/*.go` ever ships pre-written. The point is to build intuition, not copy-paste.
 
@@ -50,11 +50,12 @@ You do **not** need a Linux machine — the entire stack runs inside a Docker co
 make dev           # build image, drop into a Linux shell in /workspace
 ```
 
-Inside the container:
+Then open the lessons in your browser (the repo is bind-mounted, so open them from the host):
 
 ```bash
-cat lesson/00-intro.md     # read lesson 0
-# ... implement what it says ...
+open lesson/index.html        # macOS — or just double-click it
+# xdg-open lesson/index.html  # Linux
+# ... read lesson 0, then implement what it says ...
 ```
 
 Then from your editor/terminal (host or container — either works because the repo is bind-mounted), ask Claude Code:
@@ -64,7 +65,7 @@ Then from your editor/terminal (host or container — either works because the r
 
 ## How lessons are structured
 
-Each `lesson/NN-*.md` has:
+Each `lesson/NN-*.html` has:
 
 1. **Background** — what concepts you need, with RFC pointers and diagrams.
 2. **What to implement** — files, types, functions (by name and signature contract, not body).
@@ -97,7 +98,8 @@ Each `lesson/NN-*.md` has:
 .
 ├── Dockerfile / docker-compose.yml   # dev environment
 ├── Makefile                          # convenience targets
-├── lesson/                           # 14 markdown lessons (read these in order)
+├── lesson/                           # 14 HTML lessons + index.html (open in a browser, read in order)
+│   └── assets/                        # shared stylesheet + JS for the lessons
 ├── testdata/                         # golden hex packet fixtures
 ├── scripts/                          # TUN setup + per-lesson integration checks
 ├── .claude/skills/                   # /review and /hint skills
@@ -129,4 +131,4 @@ Each `lesson/NN-*.md` has:
 3. Look at `tcpdump` output with `make tcpdump` — your stack is wrong if the bytes on the wire are wrong.
 4. Last resort: read the RFC. [RFC 793](https://www.rfc-editor.org/rfc/rfc793) (TCP) and [RFC 791](https://www.rfc-editor.org/rfc/rfc791) (IPv4) are short and surprisingly readable.
 
-Now: `make dev`, then open [`lesson/00-intro.md`](./lesson/00-intro.md).
+Now: `make dev`, then open [`lesson/index.html`](./lesson/index.html) in your browser and start with lesson 0.
