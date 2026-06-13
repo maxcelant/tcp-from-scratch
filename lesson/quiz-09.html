@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 09 Quiz — Receiving data + ACKing · TCP From Scratch</title>
+<link rel="stylesheet" href="assets/lesson.css">
+<script>(function(){try{var t=localStorage.getItem("tcpfs-theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">TCP From Scratch</a>
+  <div class="topbar-right">
+    <span class="lesson-counter">Quiz 09 / 14</span>
+    <button class="theme-toggle" type="button" aria-label="Toggle theme">🌙</button>
+  </div>
+</header>
+<div class="progress-rail"><div class="progress-fill"></div></div>
+
+<main class="lesson">
+<article>
+  <p class="eyebrow">Lesson 09 · Self-check</p>
+  <h1>Receiving data + ACKing — quiz</h1>
+  <p class="lead">Check your understanding of lesson 09. Pick an answer, hit <strong>Check</strong>, and read the explanation. Nothing is recorded — it's a self-check before you move on, not the <code>/validate-step</code> gate.</p>
+  <div id="quiz"></div>
+  <script type="application/json" id="quiz-data">{"questions": [{"q": "When a data segment arrives in ESTABLISHED and the lesson's stack accepts the in-order payload, what value does it put in the ACK number of the reply segment?", "options": ["The seq number of the segment it just received", "RCV.NXT after it has been advanced by len(payload), i.e. the next byte expected", "SND.NXT, since the ACK confirms its own send position", "The seq of the segment plus one, mirroring how SYNs are acknowledged"], "answer": 1, "explain": "The ACK number is the next byte the receiver expects, which is RCV.NXT after advancing it by the payload length, per RFC 793 section 3.7. A common bug the lesson calls out is ACKing the seq of the segment just received rather than the new RCV.NXT; SYN-style +1 applies only to control flags, not ordinary data."}, {"q": "The lesson's receiver accepts only segments where seg.seq == RCV.NXT. What does it do with a segment that arrives out of order (a future seq), and why?", "options": ["Buffer it in a reassembly queue and ACK it so the sender stops retransmitting", "Drop the payload but still send an ACK carrying the current RCV.NXT, so the sender learns where the receiver actually is", "Silently drop the segment with no reply, letting the sender's timer trigger a retransmit", "Send a RST, since a gap in the byte stream is a protocol violation"], "answer": 1, "explain": "This lesson does not implement a reassembly queue, so out-of-order payloads are dropped, but it still ACKs with the current (un-advanced) RCV.NXT as a duplicate ACK telling the sender the next byte it needs. Buffering it would require reassembly (deferred); staying silent or sending RST would mislead the sender about the receiver's real position."}, {"q": "The RecvBuffer lives in the tcb package, which is guarded by the tcb-no-io-imports lint. Why is it acceptable for RecvBuffer to use a sync.Cond to block Conn.Read?", "options": ["The lint exempts the tcb package entirely, so any import is fine there", "sync is a pure synchronization primitive, not I/O; the lint only forbids os, net, syscall, and x/sys", "sync.Cond is rewritten to a channel at build time, so the import never appears", "Blocking is permitted only because Read is the single exception the lint allows"], "answer": 1, "explain": "The lint forbids os, net, syscall, and x/sys to keep the TCB free of real I/O, but sync is pure in-process synchronization and is allowed. So a sync.Cond (or channel) inside RecvBuffer lets a blocked Read wake when the network goroutine appends data without violating purity."}, {"q": "In the RecvBuffer design, the network read-loop goroutine is the producer and Conn.Read is the consumer. What lock discipline does the lesson prescribe to avoid a deadlock between them?", "options": ["Have Read hold the lock for the entire duration of its blocking wait so writes queue behind it", "Lock, mutate the buffer and RCV.NXT, signal the cond, then unlock; Read waits on that same cond", "Use two separate mutexes, one for the buffer and one for RCV.NXT, to maximize concurrency", "Let the producer skip locking since appends are atomic, and only lock in the consumer"], "answer": 1, "explain": "The prescribed discipline is: lock, mutate the buffer plus RCV.NXT, signal, unlock, with Read waiting on the same cond, which keeps producer and consumer coordinated. Holding the lock across the wait would block all writes (a deadlock), separate mutexes or skipping locking in the producer would let the consumer miss updates or race on shared state."}, {"q": "Why does the lesson name the RecvBuffer methods Write (called by the stack) and Read (called by the app), and what does Read return when the buffer holds fewer bytes than the caller's slice?", "options": ["The names mirror a pipe; Read returns a partial read of the available bytes and leaves nothing more to deliver", "The names are reversed by convention; Read blocks until the caller's slice is completely filled", "The names mirror a pipe; Read returns the available bytes as a partial read, and the caller may read again for more", "Write and Read must both block until exactly len(p) bytes move, matching io.Reader semantics"], "answer": 2, "explain": "Naming Write for the network append and Read for the app drain mirrors a pipe, and a Read of a buffer smaller than the slice returns a partial read while leaving any remaining bytes for a later call. io.Reader explicitly permits returning fewer than len(p) bytes, so Read need not fill the slice or block for more once some data is available."}]}</script>
+</article>
+</main>
+
+<nav class="lesson-nav">
+  <a class="prev" href="09-receiving-data.html"><span class="dir">← Re-read lesson</span><span class="ttl">09 · Receiving data + ACKing</span></a>
+  <a class="next" href="10-sending-data.html"><span class="dir">Next lesson →</span><span class="ttl">10 · Sending data</span></a>
+</nav>
+
+<footer class="site">TCP From Scratch · build a TCP/IP stack in Go, one lesson at a time</footer>
+
+<script src="assets/lesson.js"></script>
+<script src="assets/quiz.js"></script>
+</body>
+</html>

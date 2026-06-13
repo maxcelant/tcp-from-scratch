@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 08 Quiz — Completing the handshake · TCP From Scratch</title>
+<link rel="stylesheet" href="assets/lesson.css">
+<script>(function(){try{var t=localStorage.getItem("tcpfs-theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">TCP From Scratch</a>
+  <div class="topbar-right">
+    <span class="lesson-counter">Quiz 08 / 14</span>
+    <button class="theme-toggle" type="button" aria-label="Toggle theme">🌙</button>
+  </div>
+</header>
+<div class="progress-rail"><div class="progress-fill"></div></div>
+
+<main class="lesson">
+<article>
+  <p class="eyebrow">Lesson 08 · Self-check</p>
+  <h1>Completing the handshake — quiz</h1>
+  <p class="lead">Check your understanding of lesson 08. Pick an answer, hit <strong>Check</strong>, and read the explanation. Nothing is recorded — it's a self-check before you move on, not the <code>/validate-step</code> gate.</p>
+  <div id="quiz"></div>
+  <script type="application/json" id="quiz-data">{"questions": [{"q": "When your stack is in SYN-RECEIVED and the client's final ACK arrives, why does the lesson insist you check that seg.ack equals SND.NXT before transitioning to ESTABLISHED?", "options": ["To confirm the segment carries no application data, since ESTABLISHED cannot accept data yet", "To prevent transitioning on a bogus or stale ACK, which would otherwise let you accept connections that were never legitimately set up", "To verify the client's sequence number matches RCV.NXT before reading any payload", "To ensure the ACK is a retransmit of the original SYN so you can resend your SYN/ACK"], "answer": 1, "explain": "The lesson explicitly warns that blindly going to ESTABLISHED on any ACK lets you accept bogus connections; seg.ack must equal SND.NXT (your ISS+1) so the ACK actually acknowledges the SYN/ACK you sent. The sequence-number check is a separate validation, and ESTABLISHED can carry data in general, so those options confuse distinct checks."}, {"q": "While in SYN-RECEIVED, your stack receives another SYN segment (no ACK). According to the lesson, what is the correct behavior?", "options": ["Transition to ESTABLISHED, since a SYN proves the client is still alive", "Treat it as a duplicate SYN: do not transition, and optionally resend your SYN/ACK", "Immediately send a RST, because a SYN is illegal once you are in SYN-RECEIVED", "Advance SND.UNA and wait for the matching ACK to arrive afterward"], "answer": 1, "explain": "The lesson says a stray SYN in SYN-RECEIVED is a retransmit: don't transition, and optionally resend the SYN/ACK. You only reach ESTABLISHED on a valid ACK whose ack equals SND.NXT, and a duplicate SYN is not an error warranting a RST."}, {"q": "The lesson wires Accept() and the read-loop goroutine together with a channel. Why is a channel (rather than just having Accept poll Conn.State()) the chosen design?", "options": ["The read-loop goroutine is what processes the final ACK and flips the state, so it pushes the now-ESTABLISHED Conn onto a channel that the blocked Accept receives from", "Channels are the only Go construct that can safely cross goroutine boundaries for connection objects", "Polling would bypass the mutex, so a channel is required to read Conn.State() at all", "Accept must run inside the read loop, and the channel lets it borrow that goroutine's stack"], "answer": 0, "explain": "The lesson describes the read loop pushing the Conn onto l.accepted when it transitions to ESTABLISHED, while Accept blocks receiving from that channel. Conn.State() is still mutex-protected and callable from any goroutine; the channel is about handing off the established Conn from the processing goroutine to the waiting Accept, not about making state reads legal."}, {"q": "In the client's final ACK of the handshake, what does its seq field equal, and why?", "options": ["your_ISS + 1, because it must acknowledge the SYN/ACK you sent", "client_ISS, the client's initial sequence number, since no bytes have been sent yet", "client_ISS + 1, which equals your RCV.NXT because you already counted the client's SYN", "RCV.NXT + 1, because the ACK itself consumes one sequence number"], "answer": 2, "explain": "The lesson states the final ACK has seq = client_ISS + 1, equal to your RCV.NXT, because the client's SYN already consumed one sequence number that you counted. your_ISS + 1 is the ack field (= your SND.NXT), not the seq field, and a bare ACK with no data consumes no sequence space."}, {"q": "When watching the trace with tcpdump, you see S, S., then the bare ACK (.), but your stack then emits a RST. What does the lesson say this most likely indicates?", "options": ["The client sent data on the final ACK, which your SYN-RECEIVED handler cannot yet accept", "A race in which Accept read the Conn before it reached ESTABLISHED", "Your validation is rejecting the legitimate ACK, so recheck the seg.ack == SND.NXT comparison and your sequence bookkeeping", "The kernel client never reached ESTABLISHED and is aborting the connection"], "answer": 2, "explain": "The lesson's trace-reading callout says a RST emitted after the bare ACK means your validation is wrongly rejecting the legitimate ACK, pointing you to recheck seg.ack == SND.NXT and sequence bookkeeping. The final ACK in this lesson carries no data, and the RST originates from your stack, not the kernel client aborting."}]}</script>
+</article>
+</main>
+
+<nav class="lesson-nav">
+  <a class="prev" href="08-handshake-complete.html"><span class="dir">← Re-read lesson</span><span class="ttl">08 · Completing the handshake</span></a>
+  <a class="next" href="09-receiving-data.html"><span class="dir">Next lesson →</span><span class="ttl">09 · Receiving data + ACKing</span></a>
+</nav>
+
+<footer class="site">TCP From Scratch · build a TCP/IP stack in Go, one lesson at a time</footer>
+
+<script src="assets/lesson.js"></script>
+<script src="assets/quiz.js"></script>
+</body>
+</html>

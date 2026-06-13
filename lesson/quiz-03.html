@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 03 Quiz — The Internet checksum · TCP From Scratch</title>
+<link rel="stylesheet" href="assets/lesson.css">
+<script>(function(){try{var t=localStorage.getItem("tcpfs-theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">TCP From Scratch</a>
+  <div class="topbar-right">
+    <span class="lesson-counter">Quiz 03 / 14</span>
+    <button class="theme-toggle" type="button" aria-label="Toggle theme">🌙</button>
+  </div>
+</header>
+<div class="progress-rail"><div class="progress-fill"></div></div>
+
+<main class="lesson">
+<article>
+  <p class="eyebrow">Lesson 03 · Self-check</p>
+  <h1>The Internet checksum — quiz</h1>
+  <p class="lead">Check your understanding of lesson 03. Pick an answer, hit <strong>Check</strong>, and read the explanation. Nothing is recorded — it's a self-check before you move on, not the <code>/validate-step</code> gate.</p>
+  <div id="quiz"></div>
+  <script type="application/json" id="quiz-data">{"questions": [{"q": "The Internet checksum is defined as the one's complement of the one's complement sum of 16-bit words. Why does the final bitwise NOT (the outer complement) matter, and what is a common bug if it is skipped?", "options": ["It converts host byte order to network byte order; skipping it sends the bytes swapped", "It is what makes a receiver's re-sum collapse to zero/0xffff; skipping it ships the raw sum, so Verify never agrees on the wire", "It folds the end-around carry; skipping it leaves carry bits uncorrected", "It zeroes the checksum field before summing; skipping it double-counts the field"], "answer": 1, "explain": "The outer complement is what gives the checksum its verification property: a receiver summing the data plus the stored complemented value gets all-ones, which the receiver checks for. The end-around carry fold is a separate step done in the inner loop, and the NOT has nothing to do with byte order, so those distractors confuse different parts of the algorithm."}, {"q": "When the buffer to be checksummed has an odd number of bytes, how must the final lone byte be handled per RFC 1071?", "options": ["It is treated as the low byte of a 16-bit word, high byte zero", "It is treated as the high byte of a 16-bit word, low byte zero", "It is dropped, since the checksum only covers complete 16-bit words", "A 0xff padding byte is appended to make the length even"], "answer": 1, "explain": "RFC 1071 pairs adjacent octets into big-endian 16-bit words, so a leftover byte becomes the high half of a word with a zero low half (equivalent to shifting it left by 8 before adding). Treating it as the low byte, dropping it, or padding with 0xff would all change the sum and is a classic off-by-one source the lesson warns about."}, {"q": "The lesson stresses that the reference C code sums words as native-endian unsigned shorts yet still yields a correct network-order checksum. Why is this byte-order independence valid?", "options": ["Because the addition is commutative over a permutation that swaps bytes in matched pairs, so the folded result is bit-identical regardless of host endianness", "Because the kernel automatically byteswaps the result before transmission", "Because the one's complement operation cancels out any endianness difference", "Because checksums are only ever computed on big-endian machines"], "answer": 0, "explain": "RFC 1071 section 2.(B) notes that summing in either byte order produces the same result because the carries propagate identically across the swapped-but-matched pairs, so the operation is endianness-agnostic. The complement does not cancel endianness, the kernel is not responsible for the swap, and the code obviously runs on little-endian hosts too."}, {"q": "Under Convention A recommended in the lesson, how does Verify(b) decide a packet's checksum is valid, and what must be true of b?", "options": ["Verify zeroes the checksum field, recomputes Sum, and compares to the saved on-wire value", "Verify calls Sum(b) with the checksum field still present in b and returns true when the result is zero", "Verify calls Sum(b) and returns true when the result equals 0xffff with the field zeroed", "Verify recomputes Sum over the payload only, excluding the header checksum field"], "answer": 1, "explain": "Convention A leaves the on-wire checksum bytes inside b, so summing everything (data plus its own complement) folds to zero, and Verify just checks for zero. The zero-then-recompute-and-compare approach is Convention B, which the lesson explicitly contrasts and advises against because it is harder for callers."}, {"q": "The lesson calls a wrong checksum especially insidious. What happens to packets you emit with a bad checksum, and why does that make the bug hard to find?", "options": ["The kernel rejects them at the syscall with an error you can log", "The remote peer sends a RST so you learn immediately", "They are silently dropped, producing no error and no response", "They are delivered but flagged, so the application sees corrupted data"], "answer": 2, "explain": "The lesson states a wrong checksum means every packet is silently dropped by the kernel/receiver, with no error surfaced to you. Because there is no syscall failure, no RST, and no corrupted delivery, the failure mode is invisible and must be debugged by inspecting captures rather than reading an error."}]}</script>
+</article>
+</main>
+
+<nav class="lesson-nav">
+  <a class="prev" href="03-checksum.html"><span class="dir">← Re-read lesson</span><span class="ttl">03 · The Internet checksum</span></a>
+  <a class="next" href="04-ipv4-marshal-icmp.html"><span class="dir">Next lesson →</span><span class="ttl">04 · Serializing IPv4 + ICMP echo</span></a>
+</nav>
+
+<footer class="site">TCP From Scratch · build a TCP/IP stack in Go, one lesson at a time</footer>
+
+<script src="assets/lesson.js"></script>
+<script src="assets/quiz.js"></script>
+</body>
+</html>

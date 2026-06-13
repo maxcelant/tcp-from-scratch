@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 00 Quiz — Intro &amp; Setup · TCP From Scratch</title>
+<link rel="stylesheet" href="assets/lesson.css">
+<script>(function(){try{var t=localStorage.getItem("tcpfs-theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">TCP From Scratch</a>
+  <div class="topbar-right">
+    <span class="lesson-counter">Quiz 00 / 14</span>
+    <button class="theme-toggle" type="button" aria-label="Toggle theme">🌙</button>
+  </div>
+</header>
+<div class="progress-rail"><div class="progress-fill"></div></div>
+
+<main class="lesson">
+<article>
+  <p class="eyebrow">Lesson 00 · Self-check</p>
+  <h1>Intro &amp; Setup — quiz</h1>
+  <p class="lead">Check your understanding of lesson 00. Pick an answer, hit <strong>Check</strong>, and read the explanation. Nothing is recorded — it's a self-check before you move on, not the <code>/validate-step</code> gate.</p>
+  <div id="quiz"></div>
+  <script type="application/json" id="quiz-data">{"questions": [{"q": "Why does this tutorial use a TUN device rather than a TAP device to get packets between your Go process and the kernel?", "options": ["A TUN device delivers raw Layer 3 (IPv4) packets without Ethernet framing, so you don't have to implement Ethernet or ARP", "A TUN device is faster because it bypasses the kernel routing table entirely", "A TUN device gives you Layer 2 frames so you can practice writing an Ethernet driver", "A TUN device encrypts the packets, which TAP devices cannot do"], "answer": 0, "explain": "The lesson states a TUN device hands you L3 bytes (IPv4 packets with no Ethernet framing), which is exactly why Ethernet and ARP can be skipped. The TAP device is named as the L2 variant the tutorial is deliberately not using, so the Layer-2/Ethernet-driver option describes TAP, not TUN."}, {"q": "In the tutorial's setup, what role does the Linux kernel's own TCP stack play?", "options": ["It validates your Go code by compiling it before each lesson", "It acts as the remote peer your stack talks to, reachable at 10.0.0.1", "It forwards your packets to a second host on the network", "It runs your TCP state machine while your Go code only handles I/O"], "answer": 1, "explain": "The lesson explains that the kernel owns the tun0 interface address 10.0.0.1 and its own TCP stack becomes your test peer for free (running nc, ping, or python3 -m http.server). No second host or forwarding is needed, and your Go code implements the TCP logic, not the kernel."}, {"q": "Why is 10.0.0.1 handled by the kernel while packets to 10.0.0.2 are delivered to your Go process via the tun file descriptor?", "options": ["10.0.0.1 is a lower number, so the kernel always claims the lowest address in a subnet", "Your process explicitly binds a socket to 10.0.0.1 and leaves 10.0.0.2 unbound", "10.0.0.1 is the tun0 interface's own (local) address, so packets to it go to the kernel's stack; 10.0.0.2 is non-local and gets routed out tun0 to the fd", "The net-up.sh script installs a firewall rule that redirects 10.0.0.2 to userspace"], "answer": 2, "explain": "The lesson says a TUN interface's own address (10.0.0.1) is local, so packets to it are delivered to the kernel's own stack, while any 10.0.0.x address that is not local is routed out tun0 and handed to your program's fd. It is about local vs. non-local addressing and the route sending 10.0.0.0/24 to tun0, not socket binding or firewall rules."}, {"q": "The lesson says the kernel silently drops TCP segments with a bad checksum. Why does it call this a free end-to-end validator?", "options": ["Because the kernel logs every checksum error to dmesg for you to inspect", "Because a bad checksum causes tcpdump to refuse to display the packet", "Because if the kernel ever replies to your stack, your checksums must have been correct", "Because the TUN device recomputes the checksum for you on the way out"], "answer": 2, "explain": "Since the kernel drops segments whose checksum is wrong, any reply from the kernel proves your outgoing checksum was valid, giving free validation. tcpdump still shows malformed packets (it is your truth oracle regardless), and the TUN device does not fix checksums for you."}, {"q": "The package layout forbids the tcb package from importing os or net. What is the design rationale the lesson gives for this boundary?", "options": ["tcb is pure state (the FSM, sequence bookkeeping, buffers) with no I/O, which keeps it testable; only tun touches a file descriptor", "os and net are deprecated in Go 1.22 and cannot be used in new modules", "Importing net would force the code to use the kernel's TCP stack instead of your own", "tcb must stay small enough to fit in a single source file"], "answer": 0, "explain": "The lesson explains tcb is pure state and is not allowed to import os or net, while tun is the only place that touches a file descriptor, and this separation is what makes the code testable. The other options are not claims the lesson makes; importing net would not magically substitute the kernel's stack, and there is no file-size or deprecation reason given."}]}</script>
+</article>
+</main>
+
+<nav class="lesson-nav">
+  <a class="prev" href="00-intro.html"><span class="dir">← Re-read lesson</span><span class="ttl">00 · Intro &amp; Setup</span></a>
+  <a class="next" href="01-tun-device.html"><span class="dir">Next lesson →</span><span class="ttl">01 · Opening a TUN device</span></a>
+</nav>
+
+<footer class="site">TCP From Scratch · build a TCP/IP stack in Go, one lesson at a time</footer>
+
+<script src="assets/lesson.js"></script>
+<script src="assets/quiz.js"></script>
+</body>
+</html>

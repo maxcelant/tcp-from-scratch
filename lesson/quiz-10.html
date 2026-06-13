@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 10 Quiz — Sending data · TCP From Scratch</title>
+<link rel="stylesheet" href="assets/lesson.css">
+<script>(function(){try{var t=localStorage.getItem("tcpfs-theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">TCP From Scratch</a>
+  <div class="topbar-right">
+    <span class="lesson-counter">Quiz 10 / 14</span>
+    <button class="theme-toggle" type="button" aria-label="Toggle theme">🌙</button>
+  </div>
+</header>
+<div class="progress-rail"><div class="progress-fill"></div></div>
+
+<main class="lesson">
+<article>
+  <p class="eyebrow">Lesson 10 · Self-check</p>
+  <h1>Sending data — quiz</h1>
+  <p class="lead">Check your understanding of lesson 10. Pick an answer, hit <strong>Check</strong>, and read the explanation. Nothing is recorded — it's a self-check before you move on, not the <code>/validate-step</code> gate.</p>
+  <div id="quiz"></div>
+  <script type="application/json" id="quiz-data">{"questions": [{"q": "Why does Conn.Write return len(p) as soon as the data is buffered, instead of waiting until the peer ACKs those bytes?", "options": ["Because TCP guarantees in-order delivery, so an ACK is implied the moment Write returns", "Because Write only enqueues bytes into the send buffer; transmission, windowing, and ACK handling happen on the output path independently of the caller", "Because the send buffer is unbounded, so there is never a reason to block the writer", "Because the PSH flag forces the peer to acknowledge immediately, making a blocking wait unnecessary"], "answer": 1, "explain": "The lesson says Write appends p to the send buffer and returns len(p) once buffered, without blocking for bytes to be ACKed. Segmentation, the window check, and advancing SND.UNA on ACK all live on the output/ACK path, decoupled from the application call. PSH is purely informational and does not change semantics here."}, {"q": "What does the invariant SND.NXT - SND.UNA <= SND.WND enforce before a segment is sent?", "options": ["That the segment payload never exceeds the negotiated MSS", "That at most SND.WND bytes are in flight (sent but unacknowledged) so the peer is never sent more than its receive window allows", "That sequence numbers never wrap past 2^32", "That every segment carries an up-to-date ack number equal to RCV.NXT"], "answer": 1, "explain": "SND.NXT - SND.UNA is the count of bytes sent but not yet acknowledged, i.e. bytes in flight; capping it at SND.WND is flow control, ensuring the peer's receive buffer is respected. MSS is a separate per-segment size cap (segmentation), not the in-flight limit, which is the tempting confusion the lesson draws out."}, {"q": "When an ACK arrives in ESTABLISHED, under what condition does the lesson say to advance SND.UNA to seg.ack?", "options": ["Whenever seg.ack is greater than or equal to SND.UNA, including duplicates", "Only when SND.UNA < seg.ack <= SND.NXT", "Whenever seg.ack equals RCV.NXT", "Whenever the segment also carries the PSH flag"], "answer": 1, "explain": "The lesson specifies advancing only when SND.UNA < seg.ack <= SND.NXT, so old or duplicate ACKs (ack <= SND.UNA) and ACKs beyond what you sent (ack > SND.NXT) are ignored. Accepting duplicates would incorrectly free buffer space and make Acked non-idempotent, which the unit tests check."}, {"q": "Why does the send buffer's Acked logic use the comparison int32(a - b) < 0 instead of a plain a < b?", "options": ["To make the comparison faster on 32-bit hardware", "Because sequence numbers are 32-bit and wrap past 2^32, so modular signed-difference comparison correctly orders values even across a wrap", "Because seg.ack can legitimately be negative after a reset", "Because MSS-sized chunking requires signed arithmetic to compute offsets"], "answer": 1, "explain": "Sequence numbers live in a 32-bit space that wraps, so a naive unsigned a < b breaks near the wrap boundary; the lesson cites RFC 793 §3.3's helper where a < b in sequence space means int32(a - b) < 0. This lets Acked drop the correct number of bytes even when the ack number has wrapped past 2^32."}, {"q": "The lesson notes that nc advertises ~64KB, so the send window will rarely be the limiting factor against it. Why does it still insist you implement the window check?", "options": ["Because nc occasionally advertises a zero window during the handshake", "Because the window check is the essence of flow control and the L10 integration test sends enough data (~6 KB multi-segment) to exercise it", "Because without it SND.NXT would never advance past MSS", "Because the PSH flag is only valid when a window check has passed"], "answer": 1, "explain": "The lesson stresses that the check is the whole point of flow control and that the L10 integration test sends a multi-segment payload that makes the window matter, so skipping it would leave correctness untested. The other options misstate mechanics: SND.NXT advances by payload length per segment regardless, and PSH is independent of windowing."}]}</script>
+</article>
+</main>
+
+<nav class="lesson-nav">
+  <a class="prev" href="10-sending-data.html"><span class="dir">← Re-read lesson</span><span class="ttl">10 · Sending data</span></a>
+  <a class="next" href="11-retransmission.html"><span class="dir">Next lesson →</span><span class="ttl">11 · Retransmission (RTO)</span></a>
+</nav>
+
+<footer class="site">TCP From Scratch · build a TCP/IP stack in Go, one lesson at a time</footer>
+
+<script src="assets/lesson.js"></script>
+<script src="assets/quiz.js"></script>
+</body>
+</html>

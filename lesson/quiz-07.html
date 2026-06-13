@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 07 Quiz — Passive open: SYN → SYN/ACK · TCP From Scratch</title>
+<link rel="stylesheet" href="assets/lesson.css">
+<script>(function(){try{var t=localStorage.getItem("tcpfs-theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">TCP From Scratch</a>
+  <div class="topbar-right">
+    <span class="lesson-counter">Quiz 07 / 14</span>
+    <button class="theme-toggle" type="button" aria-label="Toggle theme">🌙</button>
+  </div>
+</header>
+<div class="progress-rail"><div class="progress-fill"></div></div>
+
+<main class="lesson">
+<article>
+  <p class="eyebrow">Lesson 07 · Self-check</p>
+  <h1>Passive open: SYN → SYN/ACK — quiz</h1>
+  <p class="lead">Check your understanding of lesson 07. Pick an answer, hit <strong>Check</strong>, and read the explanation. Nothing is recorded — it's a self-check before you move on, not the <code>/validate-step</code> gate.</p>
+  <div id="quiz"></div>
+  <script type="application/json" id="quiz-data">{"questions": [{"q": "When a SYN with sequence number S arrives, why does the server set RCV.NXT to S+1 and put S+1 in the ack field of its SYN/ACK?", "options": ["The SYN flag itself consumes one sequence number, so the next byte the server expects is S+1", "TCP always acknowledges one byte ahead to leave room for the window scale option", "The +1 reserves a sequence number for the MSS option carried in the SYN", "Sequence numbers must be odd on the receive side, so the server rounds S up"], "answer": 0, "explain": "A SYN consumes one sequence number even though it carries no data, so after receiving SYN with seq S the next expected sequence is S+1, which is exactly what the ack number reports (RFC 793 section 3.4). The window scale and MSS options are negotiated separately and do not consume sequence space, and there is no parity rule on sequence numbers."}, {"q": "The lesson warns that the SYN/ACK's checksum is a common bug because the pseudo-header uses the wrong src/dst. What is the correct rule?", "options": ["The pseudo-header must always use the listener's bound address as the source for both directions", "Because you are replying, your source is the original packet's destination and your destination is the original packet's source", "The pseudo-header src/dst must match the original SYN exactly so the checksum is symmetric", "Src/dst in the pseudo-header are irrelevant; only the TCP header bytes are summed"], "answer": 1, "explain": "When replying, the roles flip: your outgoing src is the SYN's dst and your dst is the SYN's src, and the pseudo-header must reflect the outgoing packet's addresses. Reusing the SYN's addresses unchanged inverts the direction and produces a checksum tcpdump flags as incorrect; the addresses are part of the checksum, not irrelevant."}, {"q": "Why is the connection demultiplexed by the full 4-tuple (local IP:port, remote IP:port) rather than just the local listening port?", "options": ["The 4-tuple lets the checksum be computed without a pseudo-header", "TCP requires the local port to differ for every connection to the same server", "Many remote clients can connect to one listening port, so only the full 4-tuple uniquely identifies each connection", "The kernel routes by 4-tuple, so user-space must match its hashing exactly"], "answer": 2, "explain": "A single listening port can host many simultaneous connections from different remote endpoints, so the local port alone is ambiguous; the (local, remote) 4-tuple is what uniquely names a connection. The local port is shared across those connections by design, and the 4-tuple has nothing to do with checksum computation."}, {"q": "The lesson says the demux map must be guarded by a mutex. What is the underlying reason?", "options": ["The read-loop goroutine and later Conn.Write calls from the user's goroutine share the map concurrently", "Go maps must be locked whenever they are used as a key for netip.AddrPort", "The TUN device delivers packets out of order, so locking restores ordering", "Mutexes are required to make netip.AddrPort comparable as a map key"], "answer": 0, "explain": "The read loop runs in its own goroutine while the user's goroutine will later call Conn.Write, so both access the shared demux map concurrently and a Go map is not safe for concurrent read/write. netip.AddrPort is already comparable on its own, and a mutex does nothing about packet ordering on the device."}, {"q": "In this lesson Accept may exist but does not yet return a connection. Why is that consistent with the design?", "options": ["Accept returns only on RST, which this lesson never sends", "Accept is blocked by the demux mutex until the read loop finishes", "Accept blocks on a channel of newly-ESTABLISHED Conns, but reaching ESTABLISHED (the final ACK) is implemented in Lesson 08", "Accept requires the MSS option to be acknowledged before it can unblock"], "answer": 2, "explain": "Accept receives from a channel of connections that have reached ESTABLISHED, and this lesson only goes as far as sending SYN/ACK (state SYN-RECEIVED); completing the handshake is Lesson 08, so nothing is ever pushed to that channel yet. It is not gated on RST, the demux mutex, or MSS acknowledgment."}]}</script>
+</article>
+</main>
+
+<nav class="lesson-nav">
+  <a class="prev" href="07-passive-open.html"><span class="dir">← Re-read lesson</span><span class="ttl">07 · Passive open: SYN → SYN/ACK</span></a>
+  <a class="next" href="08-handshake-complete.html"><span class="dir">Next lesson →</span><span class="ttl">08 · Completing the handshake</span></a>
+</nav>
+
+<footer class="site">TCP From Scratch · build a TCP/IP stack in Go, one lesson at a time</footer>
+
+<script src="assets/lesson.js"></script>
+<script src="assets/quiz.js"></script>
+</body>
+</html>

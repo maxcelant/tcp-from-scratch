@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 13 Quiz — FIN teardown · TCP From Scratch</title>
+<link rel="stylesheet" href="assets/lesson.css">
+<script>(function(){try{var t=localStorage.getItem("tcpfs-theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">TCP From Scratch</a>
+  <div class="topbar-right">
+    <span class="lesson-counter">Quiz 13 / 14</span>
+    <button class="theme-toggle" type="button" aria-label="Toggle theme">🌙</button>
+  </div>
+</header>
+<div class="progress-rail"><div class="progress-fill"></div></div>
+
+<main class="lesson">
+<article>
+  <p class="eyebrow">Lesson 13 · Self-check</p>
+  <h1>FIN teardown — quiz</h1>
+  <p class="lead">Check your understanding of lesson 13. Pick an answer, hit <strong>Check</strong>, and read the explanation. Nothing is recorded — it's a self-check before you move on, not the <code>/validate-step</code> gate.</p>
+  <div id="quiz"></div>
+  <script type="application/json" id="quiz-data">{"questions": [{"q": "Why does a clean TCP close shift every subsequent sequence number by one (the \"+1 everywhere\")?", "options": ["The FIN flag, like SYN, consumes one byte of sequence space even though it carries no data", "TCP reserves one extra byte at the end of every segment for the checksum trailer", "The receiver pads the stream with a null byte to mark end-of-stream", "The ACK number is always one greater than the sequence number by convention"], "answer": 0, "explain": "The lesson states a FIN occupies one byte of sequence space just like SYN, so if the last data byte was seq 1000 the FIN is seq 1001 and the peer ACKs 1002. The +1 comes from FIN consuming sequence space, not from any trailer, padding, or a fixed seq/ack relationship."}, {"q": "When a peer's FIN arrives while a Conn.Read is blocked waiting for data, what must happen so the reader unblocks correctly?", "options": ["The connection sends a RST to signal end-of-stream to the blocked reader", "RecvBuffer.CloseWrite() is called so the next drained Read returns io.EOF", "Conn.Read returns an error immediately, discarding any buffered bytes", "The reader keeps blocking until the application explicitly calls Close()"], "answer": 1, "explain": "The lesson identifies the common bug as failing to wake a blocked reader, and says RecvBuffer.CloseWrite() (from L09) marks the buffer closed so the next drained Read returns io.EOF. A RST is the opposite of a clean teardown, and Read should drain remaining buffered data before returning EOF rather than erroring out or blocking forever."}, {"q": "Why does the active closer linger in TIME-WAIT for 2xMSL instead of going straight to CLOSED?", "options": ["To let the kernel reclaim the socket's memory buffers gradually", "To guarantee the peer has finished sending all of its data first", "To rate-limit how quickly new connections can reuse the same port", "In case its final ACK was lost, so it can re-ACK a retransmitted peer FIN"], "answer": 3, "explain": "The lesson says the active closer waits 2xMSL after sending the final ACK in case that ACK was lost and the peer retransmits its FIN, so it remains able to respond. It is about absorbing a lost-ACK/retransmitted-FIN race, not about memory reclamation, draining data, or port reuse throttling."}, {"q": "A connection in ESTABLISHED receives a FIN from the peer. Which transition does the lesson prescribe?", "options": ["ACK the FIN, deliver EOF to Read, and move to CLOSE-WAIT", "Immediately send its own FIN and move to LAST-ACK", "Move to FIN-WAIT-1 and wait for the ACK of the FIN it must send", "Move directly to TIME-WAIT and start the 2xMSL timer"], "answer": 0, "explain": "Per the passive-close path, ESTABLISHED + FIN means ACK it (RCV.NXT += 1), CloseWrite the recv buffer to surface EOF, and go to CLOSE-WAIT. FIN-WAIT-1, LAST-ACK, and TIME-WAIT all belong to other points in the state machine; the local side only sends its own FIN later when the application calls Close()."}, {"q": "How does TIME-WAIT differ from LAST-ACK as a terminal-ish state, per the lesson?", "options": ["Both are entered by the same side; they differ only in how long they wait", "TIME-WAIT belongs to the active closer and ends on a timer; LAST-ACK belongs to the passive closer and ends on receiving the ACK of its FIN", "LAST-ACK belongs to the active closer; TIME-WAIT belongs to the passive closer", "TIME-WAIT ends on receiving an ACK while LAST-ACK ends on a 2xMSL timer"], "answer": 1, "explain": "The diagrams show TIME-WAIT on the active-close path, reached after ACKing the peer's FIN and exited via the 2xMSL timer expiry, while LAST-ACK is on the passive-close path and exits to CLOSED when the ACK of its own FIN arrives. The two states are reached by different roles and exit on different events (timer vs ACK), so the options swapping those roles or exit conditions are wrong."}]}</script>
+</article>
+</main>
+
+<nav class="lesson-nav">
+  <a class="prev" href="13-fin-teardown.html"><span class="dir">← Re-read lesson</span><span class="ttl">13 · FIN teardown</span></a>
+  <a class="next" href="14-capstone.html"><span class="dir">Next lesson →</span><span class="ttl">14 · Speak HTTP/1.0</span></a>
+</nav>
+
+<footer class="site">TCP From Scratch · build a TCP/IP stack in Go, one lesson at a time</footer>
+
+<script src="assets/lesson.js"></script>
+<script src="assets/quiz.js"></script>
+</body>
+</html>

@@ -1,0 +1,904 @@
+{
+  "quizzes": [
+    {
+      "nn": "00",
+      "questions": [
+        {
+          "q": "Why does this tutorial use a TUN device rather than a TAP device to get packets between your Go process and the kernel?",
+          "options": [
+            "A TUN device delivers raw Layer 3 (IPv4) packets without Ethernet framing, so you don't have to implement Ethernet or ARP",
+            "A TUN device is faster because it bypasses the kernel routing table entirely",
+            "A TUN device gives you Layer 2 frames so you can practice writing an Ethernet driver",
+            "A TUN device encrypts the packets, which TAP devices cannot do"
+          ],
+          "answer": 0,
+          "explain": "The lesson states a TUN device hands you L3 bytes (IPv4 packets with no Ethernet framing), which is exactly why Ethernet and ARP can be skipped. The TAP device is named as the L2 variant the tutorial is deliberately not using, so the Layer-2/Ethernet-driver option describes TAP, not TUN."
+        },
+        {
+          "q": "In the tutorial's setup, what role does the Linux kernel's own TCP stack play?",
+          "options": [
+            "It validates your Go code by compiling it before each lesson",
+            "It acts as the remote peer your stack talks to, reachable at 10.0.0.1",
+            "It forwards your packets to a second host on the network",
+            "It runs your TCP state machine while your Go code only handles I/O"
+          ],
+          "answer": 1,
+          "explain": "The lesson explains that the kernel owns the tun0 interface address 10.0.0.1 and its own TCP stack becomes your test peer for free (running nc, ping, or python3 -m http.server). No second host or forwarding is needed, and your Go code implements the TCP logic, not the kernel."
+        },
+        {
+          "q": "Why is 10.0.0.1 handled by the kernel while packets to 10.0.0.2 are delivered to your Go process via the tun file descriptor?",
+          "options": [
+            "10.0.0.1 is a lower number, so the kernel always claims the lowest address in a subnet",
+            "Your process explicitly binds a socket to 10.0.0.1 and leaves 10.0.0.2 unbound",
+            "10.0.0.1 is the tun0 interface's own (local) address, so packets to it go to the kernel's stack; 10.0.0.2 is non-local and gets routed out tun0 to the fd",
+            "The net-up.sh script installs a firewall rule that redirects 10.0.0.2 to userspace"
+          ],
+          "answer": 2,
+          "explain": "The lesson says a TUN interface's own address (10.0.0.1) is local, so packets to it are delivered to the kernel's own stack, while any 10.0.0.x address that is not local is routed out tun0 and handed to your program's fd. It is about local vs. non-local addressing and the route sending 10.0.0.0/24 to tun0, not socket binding or firewall rules."
+        },
+        {
+          "q": "The lesson says the kernel silently drops TCP segments with a bad checksum. Why does it call this a free end-to-end validator?",
+          "options": [
+            "Because the kernel logs every checksum error to dmesg for you to inspect",
+            "Because a bad checksum causes tcpdump to refuse to display the packet",
+            "Because if the kernel ever replies to your stack, your checksums must have been correct",
+            "Because the TUN device recomputes the checksum for you on the way out"
+          ],
+          "answer": 2,
+          "explain": "Since the kernel drops segments whose checksum is wrong, any reply from the kernel proves your outgoing checksum was valid, giving free validation. tcpdump still shows malformed packets (it is your truth oracle regardless), and the TUN device does not fix checksums for you."
+        },
+        {
+          "q": "The package layout forbids the tcb package from importing os or net. What is the design rationale the lesson gives for this boundary?",
+          "options": [
+            "tcb is pure state (the FSM, sequence bookkeeping, buffers) with no I/O, which keeps it testable; only tun touches a file descriptor",
+            "os and net are deprecated in Go 1.22 and cannot be used in new modules",
+            "Importing net would force the code to use the kernel's TCP stack instead of your own",
+            "tcb must stay small enough to fit in a single source file"
+          ],
+          "answer": 0,
+          "explain": "The lesson explains tcb is pure state and is not allowed to import os or net, while tun is the only place that touches a file descriptor, and this separation is what makes the code testable. The other options are not claims the lesson makes; importing net would not magically substitute the kernel's stack, and there is no file-size or deprecation reason given."
+        }
+      ]
+    },
+    {
+      "nn": "01",
+      "questions": [
+        {
+          "q": "The lesson selects IFF_TUN | IFF_NO_PI when configuring the device with TUNSETIFF. Why does it choose IFF_TUN over IFF_TAP, and what does IFF_NO_PI accomplish?",
+          "options": [
+            "IFF_TUN gives raw L3 (IP) packets with no Ethernet header, and IFF_NO_PI suppresses the kernel's 4-byte packet-info prefix so reads start at the IPv4 version nibble",
+            "IFF_TUN gives L2 frames including the Ethernet header, and IFF_NO_PI strips the 14-byte Ethernet header for you",
+            "IFF_TUN enables checksum offload, and IFF_NO_PI disables it so you can verify checksums manually",
+            "IFF_TUN puts the device in non-blocking mode, and IFF_NO_PI makes Read return one packet per call instead of a stream"
+          ],
+          "answer": 0,
+          "explain": "The lesson states IFF_TUN selects TUN mode (L3 packets, no Ethernet header) while TAP would give L2 frames, and IFF_NO_PI tells the kernel not to prepend its 4-byte packet-info header so the bytes you read begin with the IPv4 version nibble. IFF_TAP (the L2/Ethernet option) is the wrong distinction, and neither flag relates to checksums or blocking mode."
+        },
+        {
+          "q": "The lesson warns that a common bug is returning only the raw file descriptor from Open and not keeping the *os.File on the Device struct. Why does that break things?",
+          "options": [
+            "The raw fd is invalid until the *os.File wraps it, so reads return EBADF",
+            "Once the *os.File goes out of scope it gets garbage-collected and its finalizer closes the underlying fd, so later reads/writes fail",
+            "Go forbids storing raw integers in structs, so the code won't compile",
+            "The kernel only routes packets to interfaces whose fd is held by an *os.File object"
+          ],
+          "answer": 1,
+          "explain": "The lesson explicitly notes that if the *os.File is not stored, it gets GC'd and the finalizer closes the fd out from under you. The fd itself is valid after the ioctl; the problem is lifetime/ownership, not compilation rules or any kernel requirement about os.File."
+        },
+        {
+          "q": "The lesson describes the attached descriptor as behaving 'like a pipe' where one Read returns exactly one full packet. What is the main consequence of this for the rest of the stack you'll build?",
+          "options": [
+            "You must reassemble fragmented reads at this layer before any packet is complete",
+            "At this layer there are no partial-packet or stream-chunk concerns; framing into a byte stream is something higher layers (TCP) must add on top",
+            "Each Read returns a continuous byte stream, so you need a length prefix to find packet boundaries",
+            "Reads can interleave bytes from multiple packets, so you must buffer and demultiplex by source address"
+          ],
+          "answer": 1,
+          "explain": "The lesson stresses that one read equals one full packet, so you do not deal with TCP-style stream chunking at the TUN layer; turning bytes into a stream is the job of TCP higher up. The distractors describe stream or fragmentation semantics that the TUN device specifically does not impose at this layer."
+        },
+        {
+          "q": "net-up.sh runs 'ip tuntap add dev tun0 mode tun' to create a persistent device before your program runs. How does this change what Open(\"tun0\") does compared to creating the device itself?",
+          "options": [
+            "Open creates a brand-new tun0 each time, and the persistent device is just a backup that is ignored",
+            "Open attaches to the already-existing tun0 rather than creating a fresh one, and tun0 survives even when no fd is open because it is persistent",
+            "Open must skip the TUNSETIFF ioctl entirely because the device already has a name",
+            "The persistent device forces Open to run with root privileges every time it attaches"
+          ],
+          "answer": 1,
+          "explain": "The lesson says that because net-up.sh pre-creates tun0, your Open attaches to the existing device instead of creating a fresh one, and the 'persistent' flag means the interface survives without an open fd. The ioctl is still performed to attach the fd; persistence is about the device outliving the descriptor, not about skipping configuration."
+        },
+        {
+          "q": "The lesson insists the TUN package is the only code that imports os/syscall/unix, and that Open should not take a logger or context and should expose no Run() method. What design principle is this enforcing?",
+          "options": [
+            "The package is pure plumbing exposing io.ReadWriteCloser over byte slices; OS-specific code and the read loop are isolated so everything else operates on plain bytes",
+            "It minimizes binary size by reducing the number of imported standard-library packages",
+            "It guarantees the device is thread-safe by preventing concurrent loggers from writing",
+            "It ensures the stack can run on Windows by avoiding context cancellation"
+          ],
+          "answer": 0,
+          "explain": "The lesson frames the TUN package as the single boundary to the OS that hands the rest of the project byte slices via io.ReadWriteCloser, with the read loop belonging to the binary (the user), not the package. The other options invent goals (binary size, thread safety, portability) the lesson does not claim."
+        }
+      ]
+    },
+    {
+      "nn": "02",
+      "questions": [
+        {
+          "q": "The IHL field is 5 for a typical packet. How many bytes is the header, and why does the parser multiply by 4?",
+          "options": [
+            "20 bytes, because IHL counts 32-bit words and each word is 4 bytes",
+            "5 bytes, because IHL is already a byte count and the multiply is a bug",
+            "40 bytes, because IHL counts the header twice for redundancy",
+            "20 bytes, because IHL counts bytes but the minimum header happens to be 4-aligned"
+          ],
+          "answer": 0,
+          "explain": "The lesson stresses that IHL is expressed in 32-bit words, not bytes, so the header length is IHL times 4; IHL=5 yields the 20-byte minimum. Treating IHL as a raw byte count (option 1) is exactly the common bug the lesson warns against."
+        },
+        {
+          "q": "Why does the lesson tell you to store the on-wire checksum in the struct but NOT validate it in this lesson?",
+          "options": [
+            "The IPv4 header checksum is optional and most stacks ignore it entirely",
+            "The checksum covers the payload, which this parser does not have access to",
+            "There is no checksum implementation yet; the actual checksum function arrives in the next lesson",
+            "Validating it would require the pseudo-header, which only exists for TCP"
+          ],
+          "answer": 2,
+          "explain": "The lesson explicitly defers checksum validation because no checksum function exists yet, deferring it to Lesson 03 while still parsing the field byte-for-byte. The IPv4 checksum covers the header only (not the payload), so option 1 misstates its scope, and the pseudo-header is a TCP/UDP concept not relevant here."
+        },
+        {
+          "q": "The lesson says Parse takes bytes in and returns a struct out with no I/O. What is the benefit of keeping the ipv4 package free of os, net, and syscall imports?",
+          "options": [
+            "It guarantees the parser runs faster than the kernel network stack",
+            "It keeps the package pure and easily testable from byte fixtures, with no side effects or external dependencies",
+            "It is required by RFC 791 for any conforming IPv4 implementation",
+            "It prevents the parser from ever needing big-endian byte handling"
+          ],
+          "answer": 1,
+          "explain": "A pure bytes-in/struct-out function has no side effects, so it can be exercised entirely with the hex fixtures in testdata without touching sockets or the filesystem. The RFC says nothing about Go package boundaries, and purity is unrelated to byte-order handling, which still uses big-endian decoding."
+        },
+        {
+          "q": "A buffer is exactly 20 bytes long but its IHL field claims 15 (meaning a 60-byte header). What should Parse do, and why?",
+          "options": [
+            "Return ErrInvalidIHL, because IHL points past the end of the buffer",
+            "Parse successfully, because 20 bytes meets the minimum header length",
+            "Return ErrTooShort, because any buffer under 60 bytes is malformed",
+            "Truncate the header to 20 bytes and ignore the IHL value"
+          ],
+          "answer": 0,
+          "explain": "The lesson lists this exact failure case: IHL=15 implies a 60-byte header, which extends past a 20-byte buffer, so Parse must return ErrInvalidIHL. ErrTooShort is reserved for buffers below the 20-byte minimum, and silently trusting only 20 bytes would read garbage or out-of-bounds memory."
+        },
+        {
+          "q": "Why does the lesson recommend net/netip.Addr over the older net.IP for the source and destination addresses?",
+          "options": [
+            "net.IP cannot represent IPv4 addresses, only IPv6",
+            "netip.Addr is value-typed and comparable, avoiding the allocation patterns of net.IP",
+            "net.IP requires importing syscall, which the pure package forbids",
+            "netip.Addr automatically verifies the header checksum on construction"
+          ],
+          "answer": 1,
+          "explain": "The lesson states netip.Addr is value-typed, comparable, and avoids net.IP's allocation patterns, which is why it is preferred. net.IP handles IPv4 fine and does not pull in syscall, and neither type has anything to do with checksum verification."
+        }
+      ]
+    },
+    {
+      "nn": "03",
+      "questions": [
+        {
+          "q": "The Internet checksum is defined as the one's complement of the one's complement sum of 16-bit words. Why does the final bitwise NOT (the outer complement) matter, and what is a common bug if it is skipped?",
+          "options": [
+            "It converts host byte order to network byte order; skipping it sends the bytes swapped",
+            "It is what makes a receiver's re-sum collapse to zero/0xffff; skipping it ships the raw sum, so Verify never agrees on the wire",
+            "It folds the end-around carry; skipping it leaves carry bits uncorrected",
+            "It zeroes the checksum field before summing; skipping it double-counts the field"
+          ],
+          "answer": 1,
+          "explain": "The outer complement is what gives the checksum its verification property: a receiver summing the data plus the stored complemented value gets all-ones, which the receiver checks for. The end-around carry fold is a separate step done in the inner loop, and the NOT has nothing to do with byte order, so those distractors confuse different parts of the algorithm."
+        },
+        {
+          "q": "When the buffer to be checksummed has an odd number of bytes, how must the final lone byte be handled per RFC 1071?",
+          "options": [
+            "It is treated as the low byte of a 16-bit word, high byte zero",
+            "It is treated as the high byte of a 16-bit word, low byte zero",
+            "It is dropped, since the checksum only covers complete 16-bit words",
+            "A 0xff padding byte is appended to make the length even"
+          ],
+          "answer": 1,
+          "explain": "RFC 1071 pairs adjacent octets into big-endian 16-bit words, so a leftover byte becomes the high half of a word with a zero low half (equivalent to shifting it left by 8 before adding). Treating it as the low byte, dropping it, or padding with 0xff would all change the sum and is a classic off-by-one source the lesson warns about."
+        },
+        {
+          "q": "The lesson stresses that the reference C code sums words as native-endian unsigned shorts yet still yields a correct network-order checksum. Why is this byte-order independence valid?",
+          "options": [
+            "Because the addition is commutative over a permutation that swaps bytes in matched pairs, so the folded result is bit-identical regardless of host endianness",
+            "Because the kernel automatically byteswaps the result before transmission",
+            "Because the one's complement operation cancels out any endianness difference",
+            "Because checksums are only ever computed on big-endian machines"
+          ],
+          "answer": 0,
+          "explain": "RFC 1071 section 2.(B) notes that summing in either byte order produces the same result because the carries propagate identically across the swapped-but-matched pairs, so the operation is endianness-agnostic. The complement does not cancel endianness, the kernel is not responsible for the swap, and the code obviously runs on little-endian hosts too."
+        },
+        {
+          "q": "Under Convention A recommended in the lesson, how does Verify(b) decide a packet's checksum is valid, and what must be true of b?",
+          "options": [
+            "Verify zeroes the checksum field, recomputes Sum, and compares to the saved on-wire value",
+            "Verify calls Sum(b) with the checksum field still present in b and returns true when the result is zero",
+            "Verify calls Sum(b) and returns true when the result equals 0xffff with the field zeroed",
+            "Verify recomputes Sum over the payload only, excluding the header checksum field"
+          ],
+          "answer": 1,
+          "explain": "Convention A leaves the on-wire checksum bytes inside b, so summing everything (data plus its own complement) folds to zero, and Verify just checks for zero. The zero-then-recompute-and-compare approach is Convention B, which the lesson explicitly contrasts and advises against because it is harder for callers."
+        },
+        {
+          "q": "The lesson calls a wrong checksum especially insidious. What happens to packets you emit with a bad checksum, and why does that make the bug hard to find?",
+          "options": [
+            "The kernel rejects them at the syscall with an error you can log",
+            "The remote peer sends a RST so you learn immediately",
+            "They are silently dropped, producing no error and no response",
+            "They are delivered but flagged, so the application sees corrupted data"
+          ],
+          "answer": 2,
+          "explain": "The lesson states a wrong checksum means every packet is silently dropped by the kernel/receiver, with no error surfaced to you. Because there is no syscall failure, no RST, and no corrupted delivery, the failure mode is invisible and must be debugged by inspecting captures rather than reading an error."
+        }
+      ]
+    },
+    {
+      "nn": "04",
+      "questions": [
+        {
+          "q": "The lesson says Marshal does not set the IPv4 Total Length field itself; the caller must set it before calling Marshal. Why is this the right design?",
+          "options": [
+            "Marshal only serializes the struct's fields and cannot know the payload size, which lives outside the header",
+            "Total Length is computed by the kernel, so the stack must never write it",
+            "Total Length is part of the checksum, so setting it in Marshal would corrupt the sum",
+            "The field is optional in IPv4 and may be left as zero on the wire"
+          ],
+          "answer": 0,
+          "explain": "The lesson states Marshal serializes what is in the struct and does not know how big the payload will be, so the caller must set TotalLength first. Total Length covers header plus payload, information Marshal alone does not have. The kernel does not fill it for a hand-built packet, and Total Length is a normal mandatory field, not optional."
+        },
+        {
+          "q": "When building an ICMP echo reply, why must the Identifier, Sequence Number, and Data be copied back verbatim from the request?",
+          "options": [
+            "They are protected by the IPv4 header checksum and changing them would invalidate it",
+            "They are encrypted by the sender and the responder cannot legally modify them",
+            "The original sender uses them to match each reply to the request it sent",
+            "They encode the route the packet must take back to the sender"
+          ],
+          "answer": 2,
+          "explain": "The lesson explains the Identifier and Sequence Number are echoed back verbatim so the sender can match requests with replies, and the data is echoed so ping can verify it. They are part of the ICMP message, covered by the ICMP checksum, not the IPv4 checksum, and ICMP carries no routing or encryption."
+        },
+        {
+          "q": "The lesson stresses zeroing the checksum field before computing each checksum. What is the consequence of computing the checksum over a header that still contains a nonzero checksum value?",
+          "options": [
+            "The receiver will silently accept it because checksums are advisory in IPv4",
+            "The computed checksum will fold in stale checksum bits and fail to verify as zero on the receiver",
+            "Nothing changes, since the checksum algorithm ignores its own field automatically",
+            "The TUN device will reject the write before the packet leaves the stack"
+          ],
+          "answer": 1,
+          "explain": "Per the lesson and RFC 791 section 3.1, the checksum field must be zeroed before summing because the algorithm sums every 16-bit word including that field; a leftover value poisons the result. The algorithm does not skip its own field automatically, and the IPv4 checksum is verified by the receiver, not advisory."
+        },
+        {
+          "q": "The lesson notes the ICMP checksum covers the ICMP header plus data but NOT the IPv4 header. Why are these two checksums kept separate?",
+          "options": [
+            "The IPv4 checksum is optional, so ICMP must duplicate coverage in case it is absent",
+            "Each layer protects only its own region, so a router rewriting IP fields like TTL does not force the ICMP checksum to be recomputed",
+            "ICMP uses a stronger algorithm than IPv4 and cannot reuse the same sum",
+            "The TUN device computes the IPv4 checksum, leaving only ICMP to the stack"
+          ],
+          "answer": 1,
+          "explain": "The lesson states the ICMP checksum covers the ICMP message while the IPv4 header has its own checksum. Layering the checksums means each layer covers just its bytes, so routers that legitimately mutate IPv4 fields like TTL only recompute the IP checksum and leave the ICMP payload untouched. Both use the same RFC 1071 algorithm, and neither is optional here."
+        },
+        {
+          "q": "The lesson's Common Bug callout warns about getting the IPv4 Total Length wrong. What does Total Length actually count?",
+          "options": [
+            "The payload bytes only, since the header length is given separately by IHL",
+            "The entire IP packet: the header bytes plus the payload bytes",
+            "The ICMP data field length, used by ping to size its buffer",
+            "The number of bytes remaining after the current fragment"
+          ],
+          "answer": 1,
+          "explain": "The lesson explicitly warns that Total Length includes the header AND the payload, not just the payload. A learner who writes only the payload size produces a too-short packet that the receiver truncates or rejects. IHL gives the header length separately, but Total Length still spans both header and data."
+        }
+      ]
+    },
+    {
+      "nn": "05",
+      "questions": [
+        {
+          "q": "Why must TCP's Marshal function accept the source and destination IP addresses, even though those fields live in the IP header and not the TCP header?",
+          "options": [
+            "Because the IP addresses must be copied into the TCP options field for routing",
+            "Because the TCP checksum covers a pseudo-header built from the src/dst IPs, so it cross-checks the IP layer and detects misrouted or address-mangled packets",
+            "Because TCP needs the IPs to choose a source port that won't collide",
+            "Because the sequence number is derived by hashing the source and destination addresses"
+          ],
+          "answer": 1,
+          "explain": "The lesson explains the checksum covers a pseudo-header (src IP, dst IP, zero, protocol=6, TCP length) plus the TCP header and payload, which lets TCP detect packets whose IP addresses got mangled. Marshal therefore needs the IPs even though they aren't TCP header fields. The IPs are not stored in TCP options, and they have nothing to do with port selection or sequence numbers."
+        },
+        {
+          "q": "The lesson stresses the distinction between 'the MSS option is 4 bytes' and 'MSS is 2 bytes.' What does this distinction mean?",
+          "options": [
+            "The option is 4 bytes because it appears twice; the value is stored once as 2 bytes",
+            "The 4 bytes is the whole TLV blob on the wire (kind + length + 2-byte value), while the 2-byte value is just the MSS number stored in Header.MSS",
+            "MSS is 2 bytes in IPv4 but 4 bytes in IPv6",
+            "The length field of 4 means the value occupies 4 bytes and the kind/length are separate"
+          ],
+          "answer": 1,
+          "explain": "The lesson says the MSS option is the whole TLV blob (kind=2, length=4, then a 2-byte value) totaling 4 bytes, while the value itself is only the last two bytes stored as a uint16 in Header.MSS. The length byte counts the entire option including kind and length, so the value is not 4 bytes wide."
+        },
+        {
+          "q": "While walking the TCP options TLV list, your parser encounters a kind byte it does not recognize. According to the lesson, what is the correct behavior?",
+          "options": [
+            "Read its length byte and jump that many bytes forward to skip the whole option",
+            "Stop parsing immediately, since unknown options end the list",
+            "Skip exactly one byte and continue, treating it as a No-Op",
+            "Return an error because only MSS options are permitted"
+          ],
+          "answer": 0,
+          "explain": "The lesson says for any other kind you read its length byte and jump that many bytes forward, which lets the parser skip options it doesn't handle. kind=0 ends the list and kind=1 skips one byte, but an unknown kind is a normal TLV entry whose length byte governs how far to advance, not an error or a single-byte skip."
+        },
+        {
+          "q": "The lesson notes that sequence and ack numbers are uint32 and 'wrap around (mod 2^32),' and that Go's unsigned arithmetic handles this by default. Why does the protocol rely on this wrapping behavior?",
+          "options": [
+            "Because wrapping lets the receiver detect duplicate packets by checking for overflow exceptions",
+            "Because the sequence space is finite (32 bits) but a connection may transfer far more than 2^32 bytes, so seq + len arithmetic must wrap cleanly rather than overflow or error",
+            "Because TCP resets the sequence number to zero after every segment",
+            "Because the checksum requires sequence numbers to stay below 2^16"
+          ],
+          "answer": 1,
+          "explain": "The lesson points out you do a lot of seq + len arithmetic and that the numbers wrap mod 2^32, with Go's unsigned math wrapping correctly by default. The sequence space is finite while a connection can move more bytes than fit in 32 bits, so the arithmetic must wrap rather than overflow. Wrapping is not about overflow exceptions, per-segment resets, or the checksum."
+        },
+        {
+          "q": "A learner computes the TCP checksum over only the TCP header plus payload and writes it to the wire. According to the lesson, what is the most likely consequence?",
+          "options": [
+            "The segment is fine; the pseudo-header is only used on receive, not on send",
+            "The checksum will still verify because the pseudo-header sums to zero for valid addresses",
+            "The SYN/ACK will be silently dropped later, because the receiver computes the checksum including the pseudo-header and the values won't match",
+            "Parse will reject the segment immediately with a short-buffer error"
+          ],
+          "answer": 2,
+          "explain": "The lesson's warning hint says forgetting the pseudo-header is the most common TCP mistake and that it causes the SYN/ACK to be silently dropped in Lesson 07. Both sender and receiver include the pseudo-header, so omitting it produces a mismatched checksum that the peer rejects without an error. The pseudo-header is required on both send and receive and does not sum to zero."
+        }
+      ]
+    },
+    {
+      "nn": "06",
+      "questions": [
+        {
+          "q": "The lesson insists the tcb package import nothing from os, net, or syscall, and enforces this with a lint. What is the primary design payoff of keeping the package this pure?",
+          "options": [
+            "It lets the TCB state and sequence-number logic be unit-tested as plain arithmetic, with no sockets or file descriptors involved",
+            "It makes the package compile faster because fewer dependencies are linked in",
+            "It guarantees the TCP connection cannot leak memory across goroutines",
+            "It allows the same code to run unchanged on Windows because syscall is platform-specific"
+          ],
+          "answer": 0,
+          "explain": "The lesson frames purity as the SOLID payoff: given a TCB and an incoming header, the package decides the next state and what to send as plain arithmetic, making it trivially unit-testable without I/O. Faster compilation and cross-platform portability are incidental at best and not the point the lesson makes."
+        },
+        {
+          "q": "The lesson allows net/netip but bans the net package for storing the connection's addresses. Why is net/netip acceptable under the purity rule?",
+          "options": [
+            "net/netip is a pure value type, so it carries no I/O machinery like file descriptors or sockets",
+            "net/netip is faster than net at parsing IP addresses",
+            "net/netip addresses are mutable, which the TCB requires",
+            "net/netip is part of net/netip rather than net, so the lint simply does not check it"
+          ],
+          "answer": 0,
+          "explain": "The lesson explicitly says net/netip is allowed because it is a pure value type, whereas net drags in I/O. Speed and mutability are not the stated reasons, and the lint does check imports - it is the value-type purity that makes netip safe, not a loophole."
+        },
+        {
+          "q": "In the send sequence space the lesson diagrams, what distinguishes SND.NXT from SND.UNA?",
+          "options": [
+            "SND.UNA is the oldest byte that has been sent but not yet acknowledged, while SND.NXT is the next byte the sender may transmit",
+            "SND.UNA is the size of the peer's window, while SND.NXT is the size of the local window",
+            "SND.UNA is the next byte to send, while SND.NXT is the oldest unacknowledged byte",
+            "Both mark the same boundary; SND.NXT is just SND.UNA renamed after the handshake"
+          ],
+          "answer": 0,
+          "explain": "The lesson defines SND.UNA as the oldest unacknowledged sequence number and SND.NXT as the next to send, with bytes between them being in flight (sent, unacked). Option 2 swaps the two definitions, and the window size is SND.WND, a separate variable."
+        },
+        {
+          "q": "The lesson notes RCV.IRS is learned from the peer's SYN, while ISS is chosen at connection start. What does this asymmetry reflect about TCP?",
+          "options": [
+            "Each side independently picks its own initial send sequence (ISS) and learns the other side's initial sequence (IRS) during the handshake",
+            "Both sides must agree on a single shared sequence number before sending data",
+            "IRS is always zero until the connection reaches ESTABLISHED",
+            "The receiver computes IRS by adding RCV.WND to its own ISS"
+          ],
+          "answer": 0,
+          "explain": "The lesson says ISS is the local initial send sequence chosen at start, and IRS is the peer's ISS learned from their SYN - two independent sequence spaces, one per direction. There is no single shared number, IRS is not zero, and it is not derived from the local ISS or window."
+        },
+        {
+          "q": "The lesson says to give State a String() method covering all 11 states and warns that a missing case returning something like \"State(7)\" is a smell, yet the tests also assert an out-of-range State must not panic. How should these two requirements be reconciled?",
+          "options": [
+            "Handle all 11 known states explicitly, and have the default path return a non-panicking placeholder like \"State(99)\" for unknown values",
+            "Panic on any unknown state so bugs surface immediately during testing",
+            "Return an empty string for unknown states so logs stay clean",
+            "Use a map keyed by State so unknown values are silently dropped"
+          ],
+          "answer": 0,
+          "explain": "The lesson wants all 11 real states named, but also requires that an out-of-range State return something like \"State(99)\" without panicking - so a default fallback covers unknowns gracefully. Panicking violates the no-panic test, and an empty string or silent drop would hide the very smell the lesson warns about."
+        }
+      ]
+    },
+    {
+      "nn": "07",
+      "questions": [
+        {
+          "q": "When a SYN with sequence number S arrives, why does the server set RCV.NXT to S+1 and put S+1 in the ack field of its SYN/ACK?",
+          "options": [
+            "The SYN flag itself consumes one sequence number, so the next byte the server expects is S+1",
+            "TCP always acknowledges one byte ahead to leave room for the window scale option",
+            "The +1 reserves a sequence number for the MSS option carried in the SYN",
+            "Sequence numbers must be odd on the receive side, so the server rounds S up"
+          ],
+          "answer": 0,
+          "explain": "A SYN consumes one sequence number even though it carries no data, so after receiving SYN with seq S the next expected sequence is S+1, which is exactly what the ack number reports (RFC 793 section 3.4). The window scale and MSS options are negotiated separately and do not consume sequence space, and there is no parity rule on sequence numbers."
+        },
+        {
+          "q": "The lesson warns that the SYN/ACK's checksum is a common bug because the pseudo-header uses the wrong src/dst. What is the correct rule?",
+          "options": [
+            "The pseudo-header must always use the listener's bound address as the source for both directions",
+            "Because you are replying, your source is the original packet's destination and your destination is the original packet's source",
+            "The pseudo-header src/dst must match the original SYN exactly so the checksum is symmetric",
+            "Src/dst in the pseudo-header are irrelevant; only the TCP header bytes are summed"
+          ],
+          "answer": 1,
+          "explain": "When replying, the roles flip: your outgoing src is the SYN's dst and your dst is the SYN's src, and the pseudo-header must reflect the outgoing packet's addresses. Reusing the SYN's addresses unchanged inverts the direction and produces a checksum tcpdump flags as incorrect; the addresses are part of the checksum, not irrelevant."
+        },
+        {
+          "q": "Why is the connection demultiplexed by the full 4-tuple (local IP:port, remote IP:port) rather than just the local listening port?",
+          "options": [
+            "The 4-tuple lets the checksum be computed without a pseudo-header",
+            "TCP requires the local port to differ for every connection to the same server",
+            "Many remote clients can connect to one listening port, so only the full 4-tuple uniquely identifies each connection",
+            "The kernel routes by 4-tuple, so user-space must match its hashing exactly"
+          ],
+          "answer": 2,
+          "explain": "A single listening port can host many simultaneous connections from different remote endpoints, so the local port alone is ambiguous; the (local, remote) 4-tuple is what uniquely names a connection. The local port is shared across those connections by design, and the 4-tuple has nothing to do with checksum computation."
+        },
+        {
+          "q": "The lesson says the demux map must be guarded by a mutex. What is the underlying reason?",
+          "options": [
+            "The read-loop goroutine and later Conn.Write calls from the user's goroutine share the map concurrently",
+            "Go maps must be locked whenever they are used as a key for netip.AddrPort",
+            "The TUN device delivers packets out of order, so locking restores ordering",
+            "Mutexes are required to make netip.AddrPort comparable as a map key"
+          ],
+          "answer": 0,
+          "explain": "The read loop runs in its own goroutine while the user's goroutine will later call Conn.Write, so both access the shared demux map concurrently and a Go map is not safe for concurrent read/write. netip.AddrPort is already comparable on its own, and a mutex does nothing about packet ordering on the device."
+        },
+        {
+          "q": "In this lesson Accept may exist but does not yet return a connection. Why is that consistent with the design?",
+          "options": [
+            "Accept returns only on RST, which this lesson never sends",
+            "Accept is blocked by the demux mutex until the read loop finishes",
+            "Accept blocks on a channel of newly-ESTABLISHED Conns, but reaching ESTABLISHED (the final ACK) is implemented in Lesson 08",
+            "Accept requires the MSS option to be acknowledged before it can unblock"
+          ],
+          "answer": 2,
+          "explain": "Accept receives from a channel of connections that have reached ESTABLISHED, and this lesson only goes as far as sending SYN/ACK (state SYN-RECEIVED); completing the handshake is Lesson 08, so nothing is ever pushed to that channel yet. It is not gated on RST, the demux mutex, or MSS acknowledgment."
+        }
+      ]
+    },
+    {
+      "nn": "08",
+      "questions": [
+        {
+          "q": "When your stack is in SYN-RECEIVED and the client's final ACK arrives, why does the lesson insist you check that seg.ack equals SND.NXT before transitioning to ESTABLISHED?",
+          "options": [
+            "To confirm the segment carries no application data, since ESTABLISHED cannot accept data yet",
+            "To prevent transitioning on a bogus or stale ACK, which would otherwise let you accept connections that were never legitimately set up",
+            "To verify the client's sequence number matches RCV.NXT before reading any payload",
+            "To ensure the ACK is a retransmit of the original SYN so you can resend your SYN/ACK"
+          ],
+          "answer": 1,
+          "explain": "The lesson explicitly warns that blindly going to ESTABLISHED on any ACK lets you accept bogus connections; seg.ack must equal SND.NXT (your ISS+1) so the ACK actually acknowledges the SYN/ACK you sent. The sequence-number check is a separate validation, and ESTABLISHED can carry data in general, so those options confuse distinct checks."
+        },
+        {
+          "q": "While in SYN-RECEIVED, your stack receives another SYN segment (no ACK). According to the lesson, what is the correct behavior?",
+          "options": [
+            "Transition to ESTABLISHED, since a SYN proves the client is still alive",
+            "Treat it as a duplicate SYN: do not transition, and optionally resend your SYN/ACK",
+            "Immediately send a RST, because a SYN is illegal once you are in SYN-RECEIVED",
+            "Advance SND.UNA and wait for the matching ACK to arrive afterward"
+          ],
+          "answer": 1,
+          "explain": "The lesson says a stray SYN in SYN-RECEIVED is a retransmit: don't transition, and optionally resend the SYN/ACK. You only reach ESTABLISHED on a valid ACK whose ack equals SND.NXT, and a duplicate SYN is not an error warranting a RST."
+        },
+        {
+          "q": "The lesson wires Accept() and the read-loop goroutine together with a channel. Why is a channel (rather than just having Accept poll Conn.State()) the chosen design?",
+          "options": [
+            "The read-loop goroutine is what processes the final ACK and flips the state, so it pushes the now-ESTABLISHED Conn onto a channel that the blocked Accept receives from",
+            "Channels are the only Go construct that can safely cross goroutine boundaries for connection objects",
+            "Polling would bypass the mutex, so a channel is required to read Conn.State() at all",
+            "Accept must run inside the read loop, and the channel lets it borrow that goroutine's stack"
+          ],
+          "answer": 0,
+          "explain": "The lesson describes the read loop pushing the Conn onto l.accepted when it transitions to ESTABLISHED, while Accept blocks receiving from that channel. Conn.State() is still mutex-protected and callable from any goroutine; the channel is about handing off the established Conn from the processing goroutine to the waiting Accept, not about making state reads legal."
+        },
+        {
+          "q": "In the client's final ACK of the handshake, what does its seq field equal, and why?",
+          "options": [
+            "your_ISS + 1, because it must acknowledge the SYN/ACK you sent",
+            "client_ISS, the client's initial sequence number, since no bytes have been sent yet",
+            "client_ISS + 1, which equals your RCV.NXT because you already counted the client's SYN",
+            "RCV.NXT + 1, because the ACK itself consumes one sequence number"
+          ],
+          "answer": 2,
+          "explain": "The lesson states the final ACK has seq = client_ISS + 1, equal to your RCV.NXT, because the client's SYN already consumed one sequence number that you counted. your_ISS + 1 is the ack field (= your SND.NXT), not the seq field, and a bare ACK with no data consumes no sequence space."
+        },
+        {
+          "q": "When watching the trace with tcpdump, you see S, S., then the bare ACK (.), but your stack then emits a RST. What does the lesson say this most likely indicates?",
+          "options": [
+            "The client sent data on the final ACK, which your SYN-RECEIVED handler cannot yet accept",
+            "A race in which Accept read the Conn before it reached ESTABLISHED",
+            "Your validation is rejecting the legitimate ACK, so recheck the seg.ack == SND.NXT comparison and your sequence bookkeeping",
+            "The kernel client never reached ESTABLISHED and is aborting the connection"
+          ],
+          "answer": 2,
+          "explain": "The lesson's trace-reading callout says a RST emitted after the bare ACK means your validation is wrongly rejecting the legitimate ACK, pointing you to recheck seg.ack == SND.NXT and sequence bookkeeping. The final ACK in this lesson carries no data, and the RST originates from your stack, not the kernel client aborting."
+        }
+      ]
+    },
+    {
+      "nn": "09",
+      "questions": [
+        {
+          "q": "When a data segment arrives in ESTABLISHED and the lesson's stack accepts the in-order payload, what value does it put in the ACK number of the reply segment?",
+          "options": [
+            "The seq number of the segment it just received",
+            "RCV.NXT after it has been advanced by len(payload), i.e. the next byte expected",
+            "SND.NXT, since the ACK confirms its own send position",
+            "The seq of the segment plus one, mirroring how SYNs are acknowledged"
+          ],
+          "answer": 1,
+          "explain": "The ACK number is the next byte the receiver expects, which is RCV.NXT after advancing it by the payload length, per RFC 793 section 3.7. A common bug the lesson calls out is ACKing the seq of the segment just received rather than the new RCV.NXT; SYN-style +1 applies only to control flags, not ordinary data."
+        },
+        {
+          "q": "The lesson's receiver accepts only segments where seg.seq == RCV.NXT. What does it do with a segment that arrives out of order (a future seq), and why?",
+          "options": [
+            "Buffer it in a reassembly queue and ACK it so the sender stops retransmitting",
+            "Drop the payload but still send an ACK carrying the current RCV.NXT, so the sender learns where the receiver actually is",
+            "Silently drop the segment with no reply, letting the sender's timer trigger a retransmit",
+            "Send a RST, since a gap in the byte stream is a protocol violation"
+          ],
+          "answer": 1,
+          "explain": "This lesson does not implement a reassembly queue, so out-of-order payloads are dropped, but it still ACKs with the current (un-advanced) RCV.NXT as a duplicate ACK telling the sender the next byte it needs. Buffering it would require reassembly (deferred); staying silent or sending RST would mislead the sender about the receiver's real position."
+        },
+        {
+          "q": "The RecvBuffer lives in the tcb package, which is guarded by the tcb-no-io-imports lint. Why is it acceptable for RecvBuffer to use a sync.Cond to block Conn.Read?",
+          "options": [
+            "The lint exempts the tcb package entirely, so any import is fine there",
+            "sync is a pure synchronization primitive, not I/O; the lint only forbids os, net, syscall, and x/sys",
+            "sync.Cond is rewritten to a channel at build time, so the import never appears",
+            "Blocking is permitted only because Read is the single exception the lint allows"
+          ],
+          "answer": 1,
+          "explain": "The lint forbids os, net, syscall, and x/sys to keep the TCB free of real I/O, but sync is pure in-process synchronization and is allowed. So a sync.Cond (or channel) inside RecvBuffer lets a blocked Read wake when the network goroutine appends data without violating purity."
+        },
+        {
+          "q": "In the RecvBuffer design, the network read-loop goroutine is the producer and Conn.Read is the consumer. What lock discipline does the lesson prescribe to avoid a deadlock between them?",
+          "options": [
+            "Have Read hold the lock for the entire duration of its blocking wait so writes queue behind it",
+            "Lock, mutate the buffer and RCV.NXT, signal the cond, then unlock; Read waits on that same cond",
+            "Use two separate mutexes, one for the buffer and one for RCV.NXT, to maximize concurrency",
+            "Let the producer skip locking since appends are atomic, and only lock in the consumer"
+          ],
+          "answer": 1,
+          "explain": "The prescribed discipline is: lock, mutate the buffer plus RCV.NXT, signal, unlock, with Read waiting on the same cond, which keeps producer and consumer coordinated. Holding the lock across the wait would block all writes (a deadlock), separate mutexes or skipping locking in the producer would let the consumer miss updates or race on shared state."
+        },
+        {
+          "q": "Why does the lesson name the RecvBuffer methods Write (called by the stack) and Read (called by the app), and what does Read return when the buffer holds fewer bytes than the caller's slice?",
+          "options": [
+            "The names mirror a pipe; Read returns a partial read of the available bytes and leaves nothing more to deliver",
+            "The names are reversed by convention; Read blocks until the caller's slice is completely filled",
+            "The names mirror a pipe; Read returns the available bytes as a partial read, and the caller may read again for more",
+            "Write and Read must both block until exactly len(p) bytes move, matching io.Reader semantics"
+          ],
+          "answer": 2,
+          "explain": "Naming Write for the network append and Read for the app drain mirrors a pipe, and a Read of a buffer smaller than the slice returns a partial read while leaving any remaining bytes for a later call. io.Reader explicitly permits returning fewer than len(p) bytes, so Read need not fill the slice or block for more once some data is available."
+        }
+      ]
+    },
+    {
+      "nn": "10",
+      "questions": [
+        {
+          "q": "Why does Conn.Write return len(p) as soon as the data is buffered, instead of waiting until the peer ACKs those bytes?",
+          "options": [
+            "Because TCP guarantees in-order delivery, so an ACK is implied the moment Write returns",
+            "Because Write only enqueues bytes into the send buffer; transmission, windowing, and ACK handling happen on the output path independently of the caller",
+            "Because the send buffer is unbounded, so there is never a reason to block the writer",
+            "Because the PSH flag forces the peer to acknowledge immediately, making a blocking wait unnecessary"
+          ],
+          "answer": 1,
+          "explain": "The lesson says Write appends p to the send buffer and returns len(p) once buffered, without blocking for bytes to be ACKed. Segmentation, the window check, and advancing SND.UNA on ACK all live on the output/ACK path, decoupled from the application call. PSH is purely informational and does not change semantics here."
+        },
+        {
+          "q": "What does the invariant SND.NXT - SND.UNA <= SND.WND enforce before a segment is sent?",
+          "options": [
+            "That the segment payload never exceeds the negotiated MSS",
+            "That at most SND.WND bytes are in flight (sent but unacknowledged) so the peer is never sent more than its receive window allows",
+            "That sequence numbers never wrap past 2^32",
+            "That every segment carries an up-to-date ack number equal to RCV.NXT"
+          ],
+          "answer": 1,
+          "explain": "SND.NXT - SND.UNA is the count of bytes sent but not yet acknowledged, i.e. bytes in flight; capping it at SND.WND is flow control, ensuring the peer's receive buffer is respected. MSS is a separate per-segment size cap (segmentation), not the in-flight limit, which is the tempting confusion the lesson draws out."
+        },
+        {
+          "q": "When an ACK arrives in ESTABLISHED, under what condition does the lesson say to advance SND.UNA to seg.ack?",
+          "options": [
+            "Whenever seg.ack is greater than or equal to SND.UNA, including duplicates",
+            "Only when SND.UNA < seg.ack <= SND.NXT",
+            "Whenever seg.ack equals RCV.NXT",
+            "Whenever the segment also carries the PSH flag"
+          ],
+          "answer": 1,
+          "explain": "The lesson specifies advancing only when SND.UNA < seg.ack <= SND.NXT, so old or duplicate ACKs (ack <= SND.UNA) and ACKs beyond what you sent (ack > SND.NXT) are ignored. Accepting duplicates would incorrectly free buffer space and make Acked non-idempotent, which the unit tests check."
+        },
+        {
+          "q": "Why does the send buffer's Acked logic use the comparison int32(a - b) < 0 instead of a plain a < b?",
+          "options": [
+            "To make the comparison faster on 32-bit hardware",
+            "Because sequence numbers are 32-bit and wrap past 2^32, so modular signed-difference comparison correctly orders values even across a wrap",
+            "Because seg.ack can legitimately be negative after a reset",
+            "Because MSS-sized chunking requires signed arithmetic to compute offsets"
+          ],
+          "answer": 1,
+          "explain": "Sequence numbers live in a 32-bit space that wraps, so a naive unsigned a < b breaks near the wrap boundary; the lesson cites RFC 793 §3.3's helper where a < b in sequence space means int32(a - b) < 0. This lets Acked drop the correct number of bytes even when the ack number has wrapped past 2^32."
+        },
+        {
+          "q": "The lesson notes that nc advertises ~64KB, so the send window will rarely be the limiting factor against it. Why does it still insist you implement the window check?",
+          "options": [
+            "Because nc occasionally advertises a zero window during the handshake",
+            "Because the window check is the essence of flow control and the L10 integration test sends enough data (~6 KB multi-segment) to exercise it",
+            "Because without it SND.NXT would never advance past MSS",
+            "Because the PSH flag is only valid when a window check has passed"
+          ],
+          "answer": 1,
+          "explain": "The lesson stresses that the check is the whole point of flow control and that the L10 integration test sends a multi-segment payload that makes the window matter, so skipping it would leave correctness untested. The other options misstate mechanics: SND.NXT advances by payload length per segment regardless, and PSH is independent of windowing."
+        }
+      ]
+    },
+    {
+      "nn": "11",
+      "questions": [
+        {
+          "q": "When a retransmission timer fires before a segment is ACKed, the lesson says to resend the segment but NOT advance SND.NXT. Why must SND.NXT stay put on a resend?",
+          "options": [
+            "A retransmission reuses the same sequence numbers, so the bytes already occupy that sequence space; bumping SND.NXT would lie about how much new data has been sent",
+            "SND.NXT can only advance when an ACK arrives, never when sending",
+            "Advancing SND.NXT would shrink the receive window and stall the peer",
+            "The retransmitted segment must carry a fresh sequence number to avoid confusing the peer"
+          ],
+          "answer": 0,
+          "explain": "A retransmission re-sends the exact same bytes at the exact same sequence numbers, so that sequence space is already accounted for; SND.NXT tracks the next NEW byte to send and must not move on a resend. The distractor about a fresh sequence number is the explicit common-bug misconception, since reusing the same seq is what lets the peer recognize the duplicate."
+        },
+        {
+          "q": "The lesson keeps the tcb package pure (it may import time and sync, but never os/net/syscall) and has the tcp package perform the actual resend. Why is the resend itself placed in tcp rather than tcb?",
+          "options": [
+            "Because the time.Ticker that drives resends only works inside the tcp package",
+            "Because writing the segment to the device is I/O, and the project keeps tcb free of I/O so it stays a pure, testable state machine",
+            "Because tcb cannot compute deadlines without access to the network device",
+            "Because the retransmit queue must live in the same package as the socket buffers"
+          ],
+          "answer": 1,
+          "explain": "tcb is the transmission control block state machine and the project deliberately keeps it I/O-free so it can be unit-tested deterministically; the actual write to the TUN device is I/O and belongs in tcp. The queue computes deadlines and decides what to resend, but the side-effecting write happens at the I/O boundary in tcp."
+        },
+        {
+          "q": "The lesson injects a Clock interface here, after earlier lessons deliberately avoided premature interfaces. What is the specific justification for the interface in this lesson?",
+          "options": [
+            "It lets the stack swap between monotonic and wall-clock time at runtime",
+            "It is required by RFC 6298 for the RTO estimator",
+            "It allows tests to advance time manually and assert timeout behavior without any real sleeping, making time-dependent logic deterministic",
+            "It decouples the retransmit queue from the goroutine that drives it"
+          ],
+          "answer": 2,
+          "explain": "Retransmission is time-dependent, and calling time.Now/time.Sleep directly makes tests slow and flaky; a fake clock the test advances by hand makes the timeout behavior deterministic. The lesson calls this the one place premature abstraction pays off, and RFC 6298 does not require any interface."
+        },
+        {
+          "q": "Why does the lesson say to SKIP RTT measurement on retransmitted segments (Karn's algorithm)?",
+          "options": [
+            "Retransmitted segments carry no payload, so there is nothing to time",
+            "You cannot tell whether an ACK is for the original transmission or the retransmission, so the measured RTT would be ambiguous and could corrupt the SRTT estimate",
+            "Measuring on retransmits would double-count the same RTT sample",
+            "RFC 6298 forbids any RTT measurement once exponential backoff has started"
+          ],
+          "answer": 1,
+          "explain": "When a segment has been retransmitted, an arriving ACK could be acknowledging either the original or the resent copy, so the elapsed time is ambiguous and would distort SRTT/RTTVAR; Karn's algorithm avoids this by not sampling retransmitted segments. It is not that the segment lacks data or that any measurement is structurally forbidden."
+        },
+        {
+          "q": "The lesson notes that Ack() must prune entries from the retransmit queue, and frames forgetting to do so as a common bug. What goes wrong if Ack() never removes acknowledged segments?",
+          "options": [
+            "SND.UNA can never advance past the unpruned entries",
+            "The queue resends data the peer has already ACKed when those stale deadlines expire",
+            "The RTO estimator clamps to 60s and never recovers",
+            "The Clock stops firing because the queue is full"
+          ],
+          "answer": 1,
+          "explain": "An ACK advancing SND.UNA past a segment's last byte means that segment is delivered and should be removed; if it stays queued, its deadline will eventually fire and the stack will needlessly resend already-acknowledged data. SND.UNA advancement is independent of pruning, and the RTO clamp/Clock are unrelated to this bug."
+        }
+      ]
+    },
+    {
+      "nn": "12",
+      "questions": [
+        {
+          "q": "In the active-open (Dial) lessons, what plays the role of the 'real server' your stack connects to, and why does that work?",
+          "options": [
+            "A second copy of your Go stack listening on 10.0.0.2",
+            "The Linux kernel's own TCP stack, because it owns 10.0.0.1 and accepts the SYN",
+            "The TUN device itself, which loops SYNs back to your program",
+            "A user-space proxy that translates between tun0 and the loopback interface"
+          ],
+          "answer": 1,
+          "explain": "The lesson states the real server is the Linux kernel's TCP stack running python3 -m http.server bound to 10.0.0.1; since the kernel actually owns 10.0.0.1, it accepts the SYN and runs the server side. Your stack at 10.0.0.2 is not a kernel-local address, so the kernel keeps no sockets there to act as a server."
+        },
+        {
+          "q": "Why must Dial send the SYN with source address 10.0.0.2 rather than 10.0.0.1?",
+          "options": [
+            "10.0.0.1 is outside the dynamic ephemeral port range, so it would be rejected",
+            "Using 10.0.0.1 would corrupt the TCP checksum because the pseudo-header would mismatch",
+            "The server's reply is destined to the SYN's source; only dst 10.0.0.2 routes back out tun0 to your program",
+            "The kernel reserves 10.0.0.1 as a broadcast address that cannot originate TCP"
+          ],
+          "answer": 2,
+          "explain": "The reply's destination equals your SYN's source address. If the source is 10.0.0.2 the SYN/ACK (dst 10.0.0.2) routes back into tun0 where your program reads it; if you use 10.0.0.1 the reply goes to the kernel itself and you never see it, typically showing as an instant RST in tcpdump."
+        },
+        {
+          "q": "On receiving a SYN/ACK while in SYN-SENT, which validation does the lesson say you must perform before going to ESTABLISHED?",
+          "options": [
+            "Check that seg.ack == SND.NXT (ISS+1); otherwise RST or drop",
+            "Check that seg.seq == ISS; otherwise RST or drop",
+            "Check that the segment's window equals your RCV.WND",
+            "Check that seg.ack == ISS, then reply with another SYN"
+          ],
+          "answer": 0,
+          "explain": "The lesson specifies validating seg.ack == SND.NXT, which equals ISS+1, since the SYN consumed one sequence number; a mismatched ack is answered with RST or dropped. seg.seq is the peer's IRS (you record it, not compare it to ISS), and the window is stored as SND.WND, not validated as an acceptance condition."
+        },
+        {
+          "q": "The lesson stresses refactoring so Dial and Listen share machinery. What is the intended division of responsibility between the shared and path-specific code?",
+          "options": [
+            "Dial and Listen each get their own read loop and Conn type, sharing only the TUN device",
+            "Everything is shared including the SYN-SENT and SYN-RECEIVED handlers, distinguished by a runtime flag inside one handler",
+            "One read loop, demux map, and Conn type are shared; only how the Conn is born and the SYN-SENT vs SYN-RECEIVED handlers differ",
+            "Listen is reimplemented in terms of Dial, so there is only an active-open path"
+          ],
+          "answer": 2,
+          "explain": "The lesson says there should be one read loop and one Conn implementation, with passive and active opens differing only in how the Conn is created and in the SYN-SENT vs SYN-RECEIVED handlers. Duplicating the read loop or the handshake state machine is exactly what it warns against, and the ESTABLISHED handlers are explicitly shared."
+        },
+        {
+          "q": "Why does the lesson say you can hardcode or randomly pick a local ephemeral port (49152-65535) without worrying about colliding with the operating system?",
+          "options": [
+            "Go's net package automatically reserves a free port for any raw TUN connection",
+            "The kernel pre-allocates the entire dynamic range to tun0 on your behalf",
+            "10.0.0.2 is not a kernel-local address, so the kernel holds no sockets there to collide with; you only avoid reusing a 4-tuple in your own demux map",
+            "TCP ports above 49152 are guaranteed globally unique by RFC 793"
+          ],
+          "answer": 2,
+          "explain": "Because your stack's address 10.0.0.2 is not owned by the kernel, the kernel maintains no sockets bound there, so there is nothing kernel-side to collide with. The only collision you must avoid is reusing a 4-tuple already present in your own demux map."
+        }
+      ]
+    },
+    {
+      "nn": "13",
+      "questions": [
+        {
+          "q": "Why does a clean TCP close shift every subsequent sequence number by one (the \"+1 everywhere\")?",
+          "options": [
+            "The FIN flag, like SYN, consumes one byte of sequence space even though it carries no data",
+            "TCP reserves one extra byte at the end of every segment for the checksum trailer",
+            "The receiver pads the stream with a null byte to mark end-of-stream",
+            "The ACK number is always one greater than the sequence number by convention"
+          ],
+          "answer": 0,
+          "explain": "The lesson states a FIN occupies one byte of sequence space just like SYN, so if the last data byte was seq 1000 the FIN is seq 1001 and the peer ACKs 1002. The +1 comes from FIN consuming sequence space, not from any trailer, padding, or a fixed seq/ack relationship."
+        },
+        {
+          "q": "When a peer's FIN arrives while a Conn.Read is blocked waiting for data, what must happen so the reader unblocks correctly?",
+          "options": [
+            "The connection sends a RST to signal end-of-stream to the blocked reader",
+            "RecvBuffer.CloseWrite() is called so the next drained Read returns io.EOF",
+            "Conn.Read returns an error immediately, discarding any buffered bytes",
+            "The reader keeps blocking until the application explicitly calls Close()"
+          ],
+          "answer": 1,
+          "explain": "The lesson identifies the common bug as failing to wake a blocked reader, and says RecvBuffer.CloseWrite() (from L09) marks the buffer closed so the next drained Read returns io.EOF. A RST is the opposite of a clean teardown, and Read should drain remaining buffered data before returning EOF rather than erroring out or blocking forever."
+        },
+        {
+          "q": "Why does the active closer linger in TIME-WAIT for 2xMSL instead of going straight to CLOSED?",
+          "options": [
+            "To let the kernel reclaim the socket's memory buffers gradually",
+            "To guarantee the peer has finished sending all of its data first",
+            "To rate-limit how quickly new connections can reuse the same port",
+            "In case its final ACK was lost, so it can re-ACK a retransmitted peer FIN"
+          ],
+          "answer": 3,
+          "explain": "The lesson says the active closer waits 2xMSL after sending the final ACK in case that ACK was lost and the peer retransmits its FIN, so it remains able to respond. It is about absorbing a lost-ACK/retransmitted-FIN race, not about memory reclamation, draining data, or port reuse throttling."
+        },
+        {
+          "q": "A connection in ESTABLISHED receives a FIN from the peer. Which transition does the lesson prescribe?",
+          "options": [
+            "ACK the FIN, deliver EOF to Read, and move to CLOSE-WAIT",
+            "Immediately send its own FIN and move to LAST-ACK",
+            "Move to FIN-WAIT-1 and wait for the ACK of the FIN it must send",
+            "Move directly to TIME-WAIT and start the 2xMSL timer"
+          ],
+          "answer": 0,
+          "explain": "Per the passive-close path, ESTABLISHED + FIN means ACK it (RCV.NXT += 1), CloseWrite the recv buffer to surface EOF, and go to CLOSE-WAIT. FIN-WAIT-1, LAST-ACK, and TIME-WAIT all belong to other points in the state machine; the local side only sends its own FIN later when the application calls Close()."
+        },
+        {
+          "q": "How does TIME-WAIT differ from LAST-ACK as a terminal-ish state, per the lesson?",
+          "options": [
+            "Both are entered by the same side; they differ only in how long they wait",
+            "TIME-WAIT belongs to the active closer and ends on a timer; LAST-ACK belongs to the passive closer and ends on receiving the ACK of its FIN",
+            "LAST-ACK belongs to the active closer; TIME-WAIT belongs to the passive closer",
+            "TIME-WAIT ends on receiving an ACK while LAST-ACK ends on a 2xMSL timer"
+          ],
+          "answer": 1,
+          "explain": "The diagrams show TIME-WAIT on the active-close path, reached after ACKing the peer's FIN and exited via the 2xMSL timer expiry, while LAST-ACK is on the passive-close path and exits to CLOSED when the ACK of its own FIN arrives. The two states are reached by different roles and exit on different events (timer vs ACK), so the options swapping those roles or exit conditions are wrong."
+        }
+      ]
+    },
+    {
+      "nn": "14",
+      "questions": [
+        {
+          "q": "Why does the capstone use HTTP/1.0 rather than HTTP/1.1 for curl-lite?",
+          "options": [
+            "HTTP/1.0 uses CRLF line endings while HTTP/1.1 uses bare LF, so 1.0 is easier to construct",
+            "In HTTP/1.0 the server closes the connection after responding, so 'response complete' equals io.EOF and you avoid parsing Content-Length or chunked encoding",
+            "HTTP/1.0 does not require a Host header, which simplifies the request line",
+            "HTTP/1.0 runs over a simpler transport that does not need the three-way handshake"
+          ],
+          "answer": 1,
+          "explain": "The lesson chooses HTTP/1.0 because the server closes the connection after sending its response, so reading until io.EOF gives you the whole body without parsing framing like Content-Length or chunked encoding. HTTP/1.1 keeps the connection alive and would force you to parse that framing. The choice is about connection lifecycle, not about line endings or transport."
+        },
+        {
+          "q": "What signals the server that the curl-lite HTTP request is finished and that it should begin responding?",
+          "options": [
+            "The TCP FIN that curl-lite sends after writing the request line",
+            "The Content-Length header included in the GET request",
+            "The blank line (a trailing \\r\\n\\r\\n) terminating the request",
+            "Closing the write half of the connection before any read"
+          ],
+          "answer": 2,
+          "explain": "An HTTP request is terminated by a blank line, the trailing \\r\\n\\r\\n, which tells the server the request headers are complete. The lesson flags closing the write side too early as a common bug, so a FIN is not what triggers the response. A GET has no body and carries no request Content-Length."
+        },
+        {
+          "q": "In curl-lite, what does io.ReadAll(conn) returning io.EOF correspond to at the TCP level?",
+          "options": [
+            "curl-lite's own Read timer expiring with no more data buffered",
+            "The server sending a FIN, which your stack surfaces as end-of-stream",
+            "curl-lite calling Close() on the connection after writing the request",
+            "An empty TCP segment with the PSH flag set but no payload"
+          ],
+          "answer": 1,
+          "explain": "Because HTTP/1.0 servers close after responding, the server sends a FIN once the body is fully sent, and your stack (from lesson 13) surfaces that as io.EOF to the reader. EOF is therefore driven by the peer's FIN, not by a local timeout or by curl-lite closing its own side. PSH-without-payload is not how end-of-stream is signaled."
+        },
+        {
+          "q": "The lesson says curl-lite is 'almost entirely stdlib glue.' What design decision earlier in the tutorial made this possible?",
+          "options": [
+            "Storing all received bytes inside the TCB so callers can index into them directly",
+            "Having Conn implement io.Reader, io.Writer, and io.Closer so stdlib helpers like io.ReadAll work directly",
+            "Exposing the raw IP and TCP header structs so main.go can build segments itself",
+            "Buffering the entire HTTP response in the kernel before handing it to the program"
+          ],
+          "answer": 1,
+          "explain": "Because Conn satisfies io.Reader, io.Writer, and io.Closer, standard library helpers such as io.ReadAll operate on it with no special-casing, making the capstone mostly plumbing. The lesson calls this the reward for respecting the interfaces all along. The other options describe leaking internals rather than the interface-based design that enabled the glue."
+        },
+        {
+          "q": "The integration check captures a pcap and confirms no RST and no retransmit storm appear. Why are those two specifically called out as failure signals?",
+          "options": [
+            "A RST means the handshake succeeded but the window was set to zero",
+            "A RST indicates an aborted or refused connection, and a retransmit storm indicates ACKs are not advancing the peer's SND.UNA, so data keeps being resent",
+            "Both are normal parts of a healthy HTTP/1.0 exchange and are only logged for completeness",
+            "A retransmit storm proves the FIN was sent twice, which doubles the response size"
+          ],
+          "answer": 1,
+          "explain": "A RST signals a connection that was refused or torn down abnormally rather than the clean SYN/SYN-ACK/ACK then FIN exchange the lesson expects. A retransmit storm means your ACKs are not advancing the peer's SND.UNA, so it keeps resending unacknowledged data; a healthy capture shows steady ACKs and no RST. They are explicitly the opposite of a working stack, not normal traffic."
+        }
+      ]
+    }
+  ]
+}

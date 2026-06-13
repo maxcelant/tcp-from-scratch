@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 01 Quiz — Opening a TUN device · TCP From Scratch</title>
+<link rel="stylesheet" href="assets/lesson.css">
+<script>(function(){try{var t=localStorage.getItem("tcpfs-theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">TCP From Scratch</a>
+  <div class="topbar-right">
+    <span class="lesson-counter">Quiz 01 / 14</span>
+    <button class="theme-toggle" type="button" aria-label="Toggle theme">🌙</button>
+  </div>
+</header>
+<div class="progress-rail"><div class="progress-fill"></div></div>
+
+<main class="lesson">
+<article>
+  <p class="eyebrow">Lesson 01 · Self-check</p>
+  <h1>Opening a TUN device — quiz</h1>
+  <p class="lead">Check your understanding of lesson 01. Pick an answer, hit <strong>Check</strong>, and read the explanation. Nothing is recorded — it's a self-check before you move on, not the <code>/validate-step</code> gate.</p>
+  <div id="quiz"></div>
+  <script type="application/json" id="quiz-data">{"questions": [{"q": "The lesson selects IFF_TUN | IFF_NO_PI when configuring the device with TUNSETIFF. Why does it choose IFF_TUN over IFF_TAP, and what does IFF_NO_PI accomplish?", "options": ["IFF_TUN gives raw L3 (IP) packets with no Ethernet header, and IFF_NO_PI suppresses the kernel's 4-byte packet-info prefix so reads start at the IPv4 version nibble", "IFF_TUN gives L2 frames including the Ethernet header, and IFF_NO_PI strips the 14-byte Ethernet header for you", "IFF_TUN enables checksum offload, and IFF_NO_PI disables it so you can verify checksums manually", "IFF_TUN puts the device in non-blocking mode, and IFF_NO_PI makes Read return one packet per call instead of a stream"], "answer": 0, "explain": "The lesson states IFF_TUN selects TUN mode (L3 packets, no Ethernet header) while TAP would give L2 frames, and IFF_NO_PI tells the kernel not to prepend its 4-byte packet-info header so the bytes you read begin with the IPv4 version nibble. IFF_TAP (the L2/Ethernet option) is the wrong distinction, and neither flag relates to checksums or blocking mode."}, {"q": "The lesson warns that a common bug is returning only the raw file descriptor from Open and not keeping the *os.File on the Device struct. Why does that break things?", "options": ["The raw fd is invalid until the *os.File wraps it, so reads return EBADF", "Once the *os.File goes out of scope it gets garbage-collected and its finalizer closes the underlying fd, so later reads/writes fail", "Go forbids storing raw integers in structs, so the code won't compile", "The kernel only routes packets to interfaces whose fd is held by an *os.File object"], "answer": 1, "explain": "The lesson explicitly notes that if the *os.File is not stored, it gets GC'd and the finalizer closes the fd out from under you. The fd itself is valid after the ioctl; the problem is lifetime/ownership, not compilation rules or any kernel requirement about os.File."}, {"q": "The lesson describes the attached descriptor as behaving 'like a pipe' where one Read returns exactly one full packet. What is the main consequence of this for the rest of the stack you'll build?", "options": ["You must reassemble fragmented reads at this layer before any packet is complete", "At this layer there are no partial-packet or stream-chunk concerns; framing into a byte stream is something higher layers (TCP) must add on top", "Each Read returns a continuous byte stream, so you need a length prefix to find packet boundaries", "Reads can interleave bytes from multiple packets, so you must buffer and demultiplex by source address"], "answer": 1, "explain": "The lesson stresses that one read equals one full packet, so you do not deal with TCP-style stream chunking at the TUN layer; turning bytes into a stream is the job of TCP higher up. The distractors describe stream or fragmentation semantics that the TUN device specifically does not impose at this layer."}, {"q": "net-up.sh runs 'ip tuntap add dev tun0 mode tun' to create a persistent device before your program runs. How does this change what Open(\"tun0\") does compared to creating the device itself?", "options": ["Open creates a brand-new tun0 each time, and the persistent device is just a backup that is ignored", "Open attaches to the already-existing tun0 rather than creating a fresh one, and tun0 survives even when no fd is open because it is persistent", "Open must skip the TUNSETIFF ioctl entirely because the device already has a name", "The persistent device forces Open to run with root privileges every time it attaches"], "answer": 1, "explain": "The lesson says that because net-up.sh pre-creates tun0, your Open attaches to the existing device instead of creating a fresh one, and the 'persistent' flag means the interface survives without an open fd. The ioctl is still performed to attach the fd; persistence is about the device outliving the descriptor, not about skipping configuration."}, {"q": "The lesson insists the TUN package is the only code that imports os/syscall/unix, and that Open should not take a logger or context and should expose no Run() method. What design principle is this enforcing?", "options": ["The package is pure plumbing exposing io.ReadWriteCloser over byte slices; OS-specific code and the read loop are isolated so everything else operates on plain bytes", "It minimizes binary size by reducing the number of imported standard-library packages", "It guarantees the device is thread-safe by preventing concurrent loggers from writing", "It ensures the stack can run on Windows by avoiding context cancellation"], "answer": 0, "explain": "The lesson frames the TUN package as the single boundary to the OS that hands the rest of the project byte slices via io.ReadWriteCloser, with the read loop belonging to the binary (the user), not the package. The other options invent goals (binary size, thread safety, portability) the lesson does not claim."}]}</script>
+</article>
+</main>
+
+<nav class="lesson-nav">
+  <a class="prev" href="01-tun-device.html"><span class="dir">← Re-read lesson</span><span class="ttl">01 · Opening a TUN device</span></a>
+  <a class="next" href="02-ipv4-parse.html"><span class="dir">Next lesson →</span><span class="ttl">02 · Parsing IPv4 headers</span></a>
+</nav>
+
+<footer class="site">TCP From Scratch · build a TCP/IP stack in Go, one lesson at a time</footer>
+
+<script src="assets/lesson.js"></script>
+<script src="assets/quiz.js"></script>
+</body>
+</html>

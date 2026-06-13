@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 14 Quiz — Speak HTTP/1.0 · TCP From Scratch</title>
+<link rel="stylesheet" href="assets/lesson.css">
+<script>(function(){try{var t=localStorage.getItem("tcpfs-theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">TCP From Scratch</a>
+  <div class="topbar-right">
+    <span class="lesson-counter">Quiz 14 / 14</span>
+    <button class="theme-toggle" type="button" aria-label="Toggle theme">🌙</button>
+  </div>
+</header>
+<div class="progress-rail"><div class="progress-fill"></div></div>
+
+<main class="lesson">
+<article>
+  <p class="eyebrow">Lesson 14 · Self-check</p>
+  <h1>Speak HTTP/1.0 — quiz</h1>
+  <p class="lead">Check your understanding of lesson 14. Pick an answer, hit <strong>Check</strong>, and read the explanation. Nothing is recorded — it's a self-check before you move on, not the <code>/validate-step</code> gate.</p>
+  <div id="quiz"></div>
+  <script type="application/json" id="quiz-data">{"questions": [{"q": "Why does the capstone use HTTP/1.0 rather than HTTP/1.1 for curl-lite?", "options": ["HTTP/1.0 uses CRLF line endings while HTTP/1.1 uses bare LF, so 1.0 is easier to construct", "In HTTP/1.0 the server closes the connection after responding, so 'response complete' equals io.EOF and you avoid parsing Content-Length or chunked encoding", "HTTP/1.0 does not require a Host header, which simplifies the request line", "HTTP/1.0 runs over a simpler transport that does not need the three-way handshake"], "answer": 1, "explain": "The lesson chooses HTTP/1.0 because the server closes the connection after sending its response, so reading until io.EOF gives you the whole body without parsing framing like Content-Length or chunked encoding. HTTP/1.1 keeps the connection alive and would force you to parse that framing. The choice is about connection lifecycle, not about line endings or transport."}, {"q": "What signals the server that the curl-lite HTTP request is finished and that it should begin responding?", "options": ["The TCP FIN that curl-lite sends after writing the request line", "The Content-Length header included in the GET request", "The blank line (a trailing \\r\\n\\r\\n) terminating the request", "Closing the write half of the connection before any read"], "answer": 2, "explain": "An HTTP request is terminated by a blank line, the trailing \\r\\n\\r\\n, which tells the server the request headers are complete. The lesson flags closing the write side too early as a common bug, so a FIN is not what triggers the response. A GET has no body and carries no request Content-Length."}, {"q": "In curl-lite, what does io.ReadAll(conn) returning io.EOF correspond to at the TCP level?", "options": ["curl-lite's own Read timer expiring with no more data buffered", "The server sending a FIN, which your stack surfaces as end-of-stream", "curl-lite calling Close() on the connection after writing the request", "An empty TCP segment with the PSH flag set but no payload"], "answer": 1, "explain": "Because HTTP/1.0 servers close after responding, the server sends a FIN once the body is fully sent, and your stack (from lesson 13) surfaces that as io.EOF to the reader. EOF is therefore driven by the peer's FIN, not by a local timeout or by curl-lite closing its own side. PSH-without-payload is not how end-of-stream is signaled."}, {"q": "The lesson says curl-lite is 'almost entirely stdlib glue.' What design decision earlier in the tutorial made this possible?", "options": ["Storing all received bytes inside the TCB so callers can index into them directly", "Having Conn implement io.Reader, io.Writer, and io.Closer so stdlib helpers like io.ReadAll work directly", "Exposing the raw IP and TCP header structs so main.go can build segments itself", "Buffering the entire HTTP response in the kernel before handing it to the program"], "answer": 1, "explain": "Because Conn satisfies io.Reader, io.Writer, and io.Closer, standard library helpers such as io.ReadAll operate on it with no special-casing, making the capstone mostly plumbing. The lesson calls this the reward for respecting the interfaces all along. The other options describe leaking internals rather than the interface-based design that enabled the glue."}, {"q": "The integration check captures a pcap and confirms no RST and no retransmit storm appear. Why are those two specifically called out as failure signals?", "options": ["A RST means the handshake succeeded but the window was set to zero", "A RST indicates an aborted or refused connection, and a retransmit storm indicates ACKs are not advancing the peer's SND.UNA, so data keeps being resent", "Both are normal parts of a healthy HTTP/1.0 exchange and are only logged for completeness", "A retransmit storm proves the FIN was sent twice, which doubles the response size"], "answer": 1, "explain": "A RST signals a connection that was refused or torn down abnormally rather than the clean SYN/SYN-ACK/ACK then FIN exchange the lesson expects. A retransmit storm means your ACKs are not advancing the peer's SND.UNA, so it keeps resending unacknowledged data; a healthy capture shows steady ACKs and no RST. They are explicitly the opposite of a working stack, not normal traffic."}]}</script>
+</article>
+</main>
+
+<nav class="lesson-nav">
+  <a class="prev" href="14-capstone.html"><span class="dir">← Re-read lesson</span><span class="ttl">14 · Speak HTTP/1.0</span></a>
+  <a class="next" href="index.html"><span class="dir">Done →</span><span class="ttl">Back to all lessons</span></a>
+</nav>
+
+<footer class="site">TCP From Scratch · build a TCP/IP stack in Go, one lesson at a time</footer>
+
+<script src="assets/lesson.js"></script>
+<script src="assets/quiz.js"></script>
+</body>
+</html>

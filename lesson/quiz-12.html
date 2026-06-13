@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 12 Quiz — Active open (client) · TCP From Scratch</title>
+<link rel="stylesheet" href="assets/lesson.css">
+<script>(function(){try{var t=localStorage.getItem("tcpfs-theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">TCP From Scratch</a>
+  <div class="topbar-right">
+    <span class="lesson-counter">Quiz 12 / 14</span>
+    <button class="theme-toggle" type="button" aria-label="Toggle theme">🌙</button>
+  </div>
+</header>
+<div class="progress-rail"><div class="progress-fill"></div></div>
+
+<main class="lesson">
+<article>
+  <p class="eyebrow">Lesson 12 · Self-check</p>
+  <h1>Active open (client) — quiz</h1>
+  <p class="lead">Check your understanding of lesson 12. Pick an answer, hit <strong>Check</strong>, and read the explanation. Nothing is recorded — it's a self-check before you move on, not the <code>/validate-step</code> gate.</p>
+  <div id="quiz"></div>
+  <script type="application/json" id="quiz-data">{"questions": [{"q": "In the active-open (Dial) lessons, what plays the role of the 'real server' your stack connects to, and why does that work?", "options": ["A second copy of your Go stack listening on 10.0.0.2", "The Linux kernel's own TCP stack, because it owns 10.0.0.1 and accepts the SYN", "The TUN device itself, which loops SYNs back to your program", "A user-space proxy that translates between tun0 and the loopback interface"], "answer": 1, "explain": "The lesson states the real server is the Linux kernel's TCP stack running python3 -m http.server bound to 10.0.0.1; since the kernel actually owns 10.0.0.1, it accepts the SYN and runs the server side. Your stack at 10.0.0.2 is not a kernel-local address, so the kernel keeps no sockets there to act as a server."}, {"q": "Why must Dial send the SYN with source address 10.0.0.2 rather than 10.0.0.1?", "options": ["10.0.0.1 is outside the dynamic ephemeral port range, so it would be rejected", "Using 10.0.0.1 would corrupt the TCP checksum because the pseudo-header would mismatch", "The server's reply is destined to the SYN's source; only dst 10.0.0.2 routes back out tun0 to your program", "The kernel reserves 10.0.0.1 as a broadcast address that cannot originate TCP"], "answer": 2, "explain": "The reply's destination equals your SYN's source address. If the source is 10.0.0.2 the SYN/ACK (dst 10.0.0.2) routes back into tun0 where your program reads it; if you use 10.0.0.1 the reply goes to the kernel itself and you never see it, typically showing as an instant RST in tcpdump."}, {"q": "On receiving a SYN/ACK while in SYN-SENT, which validation does the lesson say you must perform before going to ESTABLISHED?", "options": ["Check that seg.ack == SND.NXT (ISS+1); otherwise RST or drop", "Check that seg.seq == ISS; otherwise RST or drop", "Check that the segment's window equals your RCV.WND", "Check that seg.ack == ISS, then reply with another SYN"], "answer": 0, "explain": "The lesson specifies validating seg.ack == SND.NXT, which equals ISS+1, since the SYN consumed one sequence number; a mismatched ack is answered with RST or dropped. seg.seq is the peer's IRS (you record it, not compare it to ISS), and the window is stored as SND.WND, not validated as an acceptance condition."}, {"q": "The lesson stresses refactoring so Dial and Listen share machinery. What is the intended division of responsibility between the shared and path-specific code?", "options": ["Dial and Listen each get their own read loop and Conn type, sharing only the TUN device", "Everything is shared including the SYN-SENT and SYN-RECEIVED handlers, distinguished by a runtime flag inside one handler", "One read loop, demux map, and Conn type are shared; only how the Conn is born and the SYN-SENT vs SYN-RECEIVED handlers differ", "Listen is reimplemented in terms of Dial, so there is only an active-open path"], "answer": 2, "explain": "The lesson says there should be one read loop and one Conn implementation, with passive and active opens differing only in how the Conn is created and in the SYN-SENT vs SYN-RECEIVED handlers. Duplicating the read loop or the handshake state machine is exactly what it warns against, and the ESTABLISHED handlers are explicitly shared."}, {"q": "Why does the lesson say you can hardcode or randomly pick a local ephemeral port (49152-65535) without worrying about colliding with the operating system?", "options": ["Go's net package automatically reserves a free port for any raw TUN connection", "The kernel pre-allocates the entire dynamic range to tun0 on your behalf", "10.0.0.2 is not a kernel-local address, so the kernel holds no sockets there to collide with; you only avoid reusing a 4-tuple in your own demux map", "TCP ports above 49152 are guaranteed globally unique by RFC 793"], "answer": 2, "explain": "Because your stack's address 10.0.0.2 is not owned by the kernel, the kernel maintains no sockets bound there, so there is nothing kernel-side to collide with. The only collision you must avoid is reusing a 4-tuple already present in your own demux map."}]}</script>
+</article>
+</main>
+
+<nav class="lesson-nav">
+  <a class="prev" href="12-active-open.html"><span class="dir">← Re-read lesson</span><span class="ttl">12 · Active open (client)</span></a>
+  <a class="next" href="13-fin-teardown.html"><span class="dir">Next lesson →</span><span class="ttl">13 · FIN teardown</span></a>
+</nav>
+
+<footer class="site">TCP From Scratch · build a TCP/IP stack in Go, one lesson at a time</footer>
+
+<script src="assets/lesson.js"></script>
+<script src="assets/quiz.js"></script>
+</body>
+</html>

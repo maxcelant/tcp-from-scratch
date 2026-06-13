@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 04 Quiz — Serializing IPv4 + ICMP echo · TCP From Scratch</title>
+<link rel="stylesheet" href="assets/lesson.css">
+<script>(function(){try{var t=localStorage.getItem("tcpfs-theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">TCP From Scratch</a>
+  <div class="topbar-right">
+    <span class="lesson-counter">Quiz 04 / 14</span>
+    <button class="theme-toggle" type="button" aria-label="Toggle theme">🌙</button>
+  </div>
+</header>
+<div class="progress-rail"><div class="progress-fill"></div></div>
+
+<main class="lesson">
+<article>
+  <p class="eyebrow">Lesson 04 · Self-check</p>
+  <h1>Serializing IPv4 + ICMP echo — quiz</h1>
+  <p class="lead">Check your understanding of lesson 04. Pick an answer, hit <strong>Check</strong>, and read the explanation. Nothing is recorded — it's a self-check before you move on, not the <code>/validate-step</code> gate.</p>
+  <div id="quiz"></div>
+  <script type="application/json" id="quiz-data">{"questions": [{"q": "The lesson says Marshal does not set the IPv4 Total Length field itself; the caller must set it before calling Marshal. Why is this the right design?", "options": ["Marshal only serializes the struct's fields and cannot know the payload size, which lives outside the header", "Total Length is computed by the kernel, so the stack must never write it", "Total Length is part of the checksum, so setting it in Marshal would corrupt the sum", "The field is optional in IPv4 and may be left as zero on the wire"], "answer": 0, "explain": "The lesson states Marshal serializes what is in the struct and does not know how big the payload will be, so the caller must set TotalLength first. Total Length covers header plus payload, information Marshal alone does not have. The kernel does not fill it for a hand-built packet, and Total Length is a normal mandatory field, not optional."}, {"q": "When building an ICMP echo reply, why must the Identifier, Sequence Number, and Data be copied back verbatim from the request?", "options": ["They are protected by the IPv4 header checksum and changing them would invalidate it", "They are encrypted by the sender and the responder cannot legally modify them", "The original sender uses them to match each reply to the request it sent", "They encode the route the packet must take back to the sender"], "answer": 2, "explain": "The lesson explains the Identifier and Sequence Number are echoed back verbatim so the sender can match requests with replies, and the data is echoed so ping can verify it. They are part of the ICMP message, covered by the ICMP checksum, not the IPv4 checksum, and ICMP carries no routing or encryption."}, {"q": "The lesson stresses zeroing the checksum field before computing each checksum. What is the consequence of computing the checksum over a header that still contains a nonzero checksum value?", "options": ["The receiver will silently accept it because checksums are advisory in IPv4", "The computed checksum will fold in stale checksum bits and fail to verify as zero on the receiver", "Nothing changes, since the checksum algorithm ignores its own field automatically", "The TUN device will reject the write before the packet leaves the stack"], "answer": 1, "explain": "Per the lesson and RFC 791 section 3.1, the checksum field must be zeroed before summing because the algorithm sums every 16-bit word including that field; a leftover value poisons the result. The algorithm does not skip its own field automatically, and the IPv4 checksum is verified by the receiver, not advisory."}, {"q": "The lesson notes the ICMP checksum covers the ICMP header plus data but NOT the IPv4 header. Why are these two checksums kept separate?", "options": ["The IPv4 checksum is optional, so ICMP must duplicate coverage in case it is absent", "Each layer protects only its own region, so a router rewriting IP fields like TTL does not force the ICMP checksum to be recomputed", "ICMP uses a stronger algorithm than IPv4 and cannot reuse the same sum", "The TUN device computes the IPv4 checksum, leaving only ICMP to the stack"], "answer": 1, "explain": "The lesson states the ICMP checksum covers the ICMP message while the IPv4 header has its own checksum. Layering the checksums means each layer covers just its bytes, so routers that legitimately mutate IPv4 fields like TTL only recompute the IP checksum and leave the ICMP payload untouched. Both use the same RFC 1071 algorithm, and neither is optional here."}, {"q": "The lesson's Common Bug callout warns about getting the IPv4 Total Length wrong. What does Total Length actually count?", "options": ["The payload bytes only, since the header length is given separately by IHL", "The entire IP packet: the header bytes plus the payload bytes", "The ICMP data field length, used by ping to size its buffer", "The number of bytes remaining after the current fragment"], "answer": 1, "explain": "The lesson explicitly warns that Total Length includes the header AND the payload, not just the payload. A learner who writes only the payload size produces a too-short packet that the receiver truncates or rejects. IHL gives the header length separately, but Total Length still spans both header and data."}]}</script>
+</article>
+</main>
+
+<nav class="lesson-nav">
+  <a class="prev" href="04-ipv4-marshal-icmp.html"><span class="dir">← Re-read lesson</span><span class="ttl">04 · Serializing IPv4 + ICMP echo</span></a>
+  <a class="next" href="05-tcp-header.html"><span class="dir">Next lesson →</span><span class="ttl">05 · TCP header parse/serialize</span></a>
+</nav>
+
+<footer class="site">TCP From Scratch · build a TCP/IP stack in Go, one lesson at a time</footer>
+
+<script src="assets/lesson.js"></script>
+<script src="assets/quiz.js"></script>
+</body>
+</html>

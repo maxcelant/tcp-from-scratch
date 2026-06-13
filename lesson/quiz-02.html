@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 02 Quiz — Parsing IPv4 headers · TCP From Scratch</title>
+<link rel="stylesheet" href="assets/lesson.css">
+<script>(function(){try{var t=localStorage.getItem("tcpfs-theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">TCP From Scratch</a>
+  <div class="topbar-right">
+    <span class="lesson-counter">Quiz 02 / 14</span>
+    <button class="theme-toggle" type="button" aria-label="Toggle theme">🌙</button>
+  </div>
+</header>
+<div class="progress-rail"><div class="progress-fill"></div></div>
+
+<main class="lesson">
+<article>
+  <p class="eyebrow">Lesson 02 · Self-check</p>
+  <h1>Parsing IPv4 headers — quiz</h1>
+  <p class="lead">Check your understanding of lesson 02. Pick an answer, hit <strong>Check</strong>, and read the explanation. Nothing is recorded — it's a self-check before you move on, not the <code>/validate-step</code> gate.</p>
+  <div id="quiz"></div>
+  <script type="application/json" id="quiz-data">{"questions": [{"q": "The IHL field is 5 for a typical packet. How many bytes is the header, and why does the parser multiply by 4?", "options": ["20 bytes, because IHL counts 32-bit words and each word is 4 bytes", "5 bytes, because IHL is already a byte count and the multiply is a bug", "40 bytes, because IHL counts the header twice for redundancy", "20 bytes, because IHL counts bytes but the minimum header happens to be 4-aligned"], "answer": 0, "explain": "The lesson stresses that IHL is expressed in 32-bit words, not bytes, so the header length is IHL times 4; IHL=5 yields the 20-byte minimum. Treating IHL as a raw byte count (option 1) is exactly the common bug the lesson warns against."}, {"q": "Why does the lesson tell you to store the on-wire checksum in the struct but NOT validate it in this lesson?", "options": ["The IPv4 header checksum is optional and most stacks ignore it entirely", "The checksum covers the payload, which this parser does not have access to", "There is no checksum implementation yet; the actual checksum function arrives in the next lesson", "Validating it would require the pseudo-header, which only exists for TCP"], "answer": 2, "explain": "The lesson explicitly defers checksum validation because no checksum function exists yet, deferring it to Lesson 03 while still parsing the field byte-for-byte. The IPv4 checksum covers the header only (not the payload), so option 1 misstates its scope, and the pseudo-header is a TCP/UDP concept not relevant here."}, {"q": "The lesson says Parse takes bytes in and returns a struct out with no I/O. What is the benefit of keeping the ipv4 package free of os, net, and syscall imports?", "options": ["It guarantees the parser runs faster than the kernel network stack", "It keeps the package pure and easily testable from byte fixtures, with no side effects or external dependencies", "It is required by RFC 791 for any conforming IPv4 implementation", "It prevents the parser from ever needing big-endian byte handling"], "answer": 1, "explain": "A pure bytes-in/struct-out function has no side effects, so it can be exercised entirely with the hex fixtures in testdata without touching sockets or the filesystem. The RFC says nothing about Go package boundaries, and purity is unrelated to byte-order handling, which still uses big-endian decoding."}, {"q": "A buffer is exactly 20 bytes long but its IHL field claims 15 (meaning a 60-byte header). What should Parse do, and why?", "options": ["Return ErrInvalidIHL, because IHL points past the end of the buffer", "Parse successfully, because 20 bytes meets the minimum header length", "Return ErrTooShort, because any buffer under 60 bytes is malformed", "Truncate the header to 20 bytes and ignore the IHL value"], "answer": 0, "explain": "The lesson lists this exact failure case: IHL=15 implies a 60-byte header, which extends past a 20-byte buffer, so Parse must return ErrInvalidIHL. ErrTooShort is reserved for buffers below the 20-byte minimum, and silently trusting only 20 bytes would read garbage or out-of-bounds memory."}, {"q": "Why does the lesson recommend net/netip.Addr over the older net.IP for the source and destination addresses?", "options": ["net.IP cannot represent IPv4 addresses, only IPv6", "netip.Addr is value-typed and comparable, avoiding the allocation patterns of net.IP", "net.IP requires importing syscall, which the pure package forbids", "netip.Addr automatically verifies the header checksum on construction"], "answer": 1, "explain": "The lesson states netip.Addr is value-typed, comparable, and avoids net.IP's allocation patterns, which is why it is preferred. net.IP handles IPv4 fine and does not pull in syscall, and neither type has anything to do with checksum verification."}]}</script>
+</article>
+</main>
+
+<nav class="lesson-nav">
+  <a class="prev" href="02-ipv4-parse.html"><span class="dir">← Re-read lesson</span><span class="ttl">02 · Parsing IPv4 headers</span></a>
+  <a class="next" href="03-checksum.html"><span class="dir">Next lesson →</span><span class="ttl">03 · The Internet checksum</span></a>
+</nav>
+
+<footer class="site">TCP From Scratch · build a TCP/IP stack in Go, one lesson at a time</footer>
+
+<script src="assets/lesson.js"></script>
+<script src="assets/quiz.js"></script>
+</body>
+</html>

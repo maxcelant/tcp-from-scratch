@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 06 Quiz — TCB &amp; state machine · TCP From Scratch</title>
+<link rel="stylesheet" href="assets/lesson.css">
+<script>(function(){try{var t=localStorage.getItem("tcpfs-theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">TCP From Scratch</a>
+  <div class="topbar-right">
+    <span class="lesson-counter">Quiz 06 / 14</span>
+    <button class="theme-toggle" type="button" aria-label="Toggle theme">🌙</button>
+  </div>
+</header>
+<div class="progress-rail"><div class="progress-fill"></div></div>
+
+<main class="lesson">
+<article>
+  <p class="eyebrow">Lesson 06 · Self-check</p>
+  <h1>TCB &amp; state machine — quiz</h1>
+  <p class="lead">Check your understanding of lesson 06. Pick an answer, hit <strong>Check</strong>, and read the explanation. Nothing is recorded — it's a self-check before you move on, not the <code>/validate-step</code> gate.</p>
+  <div id="quiz"></div>
+  <script type="application/json" id="quiz-data">{"questions": [{"q": "The lesson insists the tcb package import nothing from os, net, or syscall, and enforces this with a lint. What is the primary design payoff of keeping the package this pure?", "options": ["It lets the TCB state and sequence-number logic be unit-tested as plain arithmetic, with no sockets or file descriptors involved", "It makes the package compile faster because fewer dependencies are linked in", "It guarantees the TCP connection cannot leak memory across goroutines", "It allows the same code to run unchanged on Windows because syscall is platform-specific"], "answer": 0, "explain": "The lesson frames purity as the SOLID payoff: given a TCB and an incoming header, the package decides the next state and what to send as plain arithmetic, making it trivially unit-testable without I/O. Faster compilation and cross-platform portability are incidental at best and not the point the lesson makes."}, {"q": "The lesson allows net/netip but bans the net package for storing the connection's addresses. Why is net/netip acceptable under the purity rule?", "options": ["net/netip is a pure value type, so it carries no I/O machinery like file descriptors or sockets", "net/netip is faster than net at parsing IP addresses", "net/netip addresses are mutable, which the TCB requires", "net/netip is part of net/netip rather than net, so the lint simply does not check it"], "answer": 0, "explain": "The lesson explicitly says net/netip is allowed because it is a pure value type, whereas net drags in I/O. Speed and mutability are not the stated reasons, and the lint does check imports - it is the value-type purity that makes netip safe, not a loophole."}, {"q": "In the send sequence space the lesson diagrams, what distinguishes SND.NXT from SND.UNA?", "options": ["SND.UNA is the oldest byte that has been sent but not yet acknowledged, while SND.NXT is the next byte the sender may transmit", "SND.UNA is the size of the peer's window, while SND.NXT is the size of the local window", "SND.UNA is the next byte to send, while SND.NXT is the oldest unacknowledged byte", "Both mark the same boundary; SND.NXT is just SND.UNA renamed after the handshake"], "answer": 0, "explain": "The lesson defines SND.UNA as the oldest unacknowledged sequence number and SND.NXT as the next to send, with bytes between them being in flight (sent, unacked). Option 2 swaps the two definitions, and the window size is SND.WND, a separate variable."}, {"q": "The lesson notes RCV.IRS is learned from the peer's SYN, while ISS is chosen at connection start. What does this asymmetry reflect about TCP?", "options": ["Each side independently picks its own initial send sequence (ISS) and learns the other side's initial sequence (IRS) during the handshake", "Both sides must agree on a single shared sequence number before sending data", "IRS is always zero until the connection reaches ESTABLISHED", "The receiver computes IRS by adding RCV.WND to its own ISS"], "answer": 0, "explain": "The lesson says ISS is the local initial send sequence chosen at start, and IRS is the peer's ISS learned from their SYN - two independent sequence spaces, one per direction. There is no single shared number, IRS is not zero, and it is not derived from the local ISS or window."}, {"q": "The lesson says to give State a String() method covering all 11 states and warns that a missing case returning something like \"State(7)\" is a smell, yet the tests also assert an out-of-range State must not panic. How should these two requirements be reconciled?", "options": ["Handle all 11 known states explicitly, and have the default path return a non-panicking placeholder like \"State(99)\" for unknown values", "Panic on any unknown state so bugs surface immediately during testing", "Return an empty string for unknown states so logs stay clean", "Use a map keyed by State so unknown values are silently dropped"], "answer": 0, "explain": "The lesson wants all 11 real states named, but also requires that an out-of-range State return something like \"State(99)\" without panicking - so a default fallback covers unknowns gracefully. Panicking violates the no-panic test, and an empty string or silent drop would hide the very smell the lesson warns about."}]}</script>
+</article>
+</main>
+
+<nav class="lesson-nav">
+  <a class="prev" href="06-tcb-state-machine.html"><span class="dir">← Re-read lesson</span><span class="ttl">06 · TCB &amp; state machine</span></a>
+  <a class="next" href="07-passive-open.html"><span class="dir">Next lesson →</span><span class="ttl">07 · Passive open: SYN → SYN/ACK</span></a>
+</nav>
+
+<footer class="site">TCP From Scratch · build a TCP/IP stack in Go, one lesson at a time</footer>
+
+<script src="assets/lesson.js"></script>
+<script src="assets/quiz.js"></script>
+</body>
+</html>

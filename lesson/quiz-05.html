@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 05 Quiz — TCP header parse/serialize · TCP From Scratch</title>
+<link rel="stylesheet" href="assets/lesson.css">
+<script>(function(){try{var t=localStorage.getItem("tcpfs-theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">TCP From Scratch</a>
+  <div class="topbar-right">
+    <span class="lesson-counter">Quiz 05 / 14</span>
+    <button class="theme-toggle" type="button" aria-label="Toggle theme">🌙</button>
+  </div>
+</header>
+<div class="progress-rail"><div class="progress-fill"></div></div>
+
+<main class="lesson">
+<article>
+  <p class="eyebrow">Lesson 05 · Self-check</p>
+  <h1>TCP header parse/serialize — quiz</h1>
+  <p class="lead">Check your understanding of lesson 05. Pick an answer, hit <strong>Check</strong>, and read the explanation. Nothing is recorded — it's a self-check before you move on, not the <code>/validate-step</code> gate.</p>
+  <div id="quiz"></div>
+  <script type="application/json" id="quiz-data">{"questions": [{"q": "Why must TCP's Marshal function accept the source and destination IP addresses, even though those fields live in the IP header and not the TCP header?", "options": ["Because the IP addresses must be copied into the TCP options field for routing", "Because the TCP checksum covers a pseudo-header built from the src/dst IPs, so it cross-checks the IP layer and detects misrouted or address-mangled packets", "Because TCP needs the IPs to choose a source port that won't collide", "Because the sequence number is derived by hashing the source and destination addresses"], "answer": 1, "explain": "The lesson explains the checksum covers a pseudo-header (src IP, dst IP, zero, protocol=6, TCP length) plus the TCP header and payload, which lets TCP detect packets whose IP addresses got mangled. Marshal therefore needs the IPs even though they aren't TCP header fields. The IPs are not stored in TCP options, and they have nothing to do with port selection or sequence numbers."}, {"q": "The lesson stresses the distinction between 'the MSS option is 4 bytes' and 'MSS is 2 bytes.' What does this distinction mean?", "options": ["The option is 4 bytes because it appears twice; the value is stored once as 2 bytes", "The 4 bytes is the whole TLV blob on the wire (kind + length + 2-byte value), while the 2-byte value is just the MSS number stored in Header.MSS", "MSS is 2 bytes in IPv4 but 4 bytes in IPv6", "The length field of 4 means the value occupies 4 bytes and the kind/length are separate"], "answer": 1, "explain": "The lesson says the MSS option is the whole TLV blob (kind=2, length=4, then a 2-byte value) totaling 4 bytes, while the value itself is only the last two bytes stored as a uint16 in Header.MSS. The length byte counts the entire option including kind and length, so the value is not 4 bytes wide."}, {"q": "While walking the TCP options TLV list, your parser encounters a kind byte it does not recognize. According to the lesson, what is the correct behavior?", "options": ["Read its length byte and jump that many bytes forward to skip the whole option", "Stop parsing immediately, since unknown options end the list", "Skip exactly one byte and continue, treating it as a No-Op", "Return an error because only MSS options are permitted"], "answer": 0, "explain": "The lesson says for any other kind you read its length byte and jump that many bytes forward, which lets the parser skip options it doesn't handle. kind=0 ends the list and kind=1 skips one byte, but an unknown kind is a normal TLV entry whose length byte governs how far to advance, not an error or a single-byte skip."}, {"q": "The lesson notes that sequence and ack numbers are uint32 and 'wrap around (mod 2^32),' and that Go's unsigned arithmetic handles this by default. Why does the protocol rely on this wrapping behavior?", "options": ["Because wrapping lets the receiver detect duplicate packets by checking for overflow exceptions", "Because the sequence space is finite (32 bits) but a connection may transfer far more than 2^32 bytes, so seq + len arithmetic must wrap cleanly rather than overflow or error", "Because TCP resets the sequence number to zero after every segment", "Because the checksum requires sequence numbers to stay below 2^16"], "answer": 1, "explain": "The lesson points out you do a lot of seq + len arithmetic and that the numbers wrap mod 2^32, with Go's unsigned math wrapping correctly by default. The sequence space is finite while a connection can move more bytes than fit in 32 bits, so the arithmetic must wrap rather than overflow. Wrapping is not about overflow exceptions, per-segment resets, or the checksum."}, {"q": "A learner computes the TCP checksum over only the TCP header plus payload and writes it to the wire. According to the lesson, what is the most likely consequence?", "options": ["The segment is fine; the pseudo-header is only used on receive, not on send", "The checksum will still verify because the pseudo-header sums to zero for valid addresses", "The SYN/ACK will be silently dropped later, because the receiver computes the checksum including the pseudo-header and the values won't match", "Parse will reject the segment immediately with a short-buffer error"], "answer": 2, "explain": "The lesson's warning hint says forgetting the pseudo-header is the most common TCP mistake and that it causes the SYN/ACK to be silently dropped in Lesson 07. Both sender and receiver include the pseudo-header, so omitting it produces a mismatched checksum that the peer rejects without an error. The pseudo-header is required on both send and receive and does not sum to zero."}]}</script>
+</article>
+</main>
+
+<nav class="lesson-nav">
+  <a class="prev" href="05-tcp-header.html"><span class="dir">← Re-read lesson</span><span class="ttl">05 · TCP header parse/serialize</span></a>
+  <a class="next" href="06-tcb-state-machine.html"><span class="dir">Next lesson →</span><span class="ttl">06 · TCB &amp; state machine</span></a>
+</nav>
+
+<footer class="site">TCP From Scratch · build a TCP/IP stack in Go, one lesson at a time</footer>
+
+<script src="assets/lesson.js"></script>
+<script src="assets/quiz.js"></script>
+</body>
+</html>

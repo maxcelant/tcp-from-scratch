@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 11 Quiz — Retransmission (RTO) · TCP From Scratch</title>
+<link rel="stylesheet" href="assets/lesson.css">
+<script>(function(){try{var t=localStorage.getItem("tcpfs-theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">TCP From Scratch</a>
+  <div class="topbar-right">
+    <span class="lesson-counter">Quiz 11 / 14</span>
+    <button class="theme-toggle" type="button" aria-label="Toggle theme">🌙</button>
+  </div>
+</header>
+<div class="progress-rail"><div class="progress-fill"></div></div>
+
+<main class="lesson">
+<article>
+  <p class="eyebrow">Lesson 11 · Self-check</p>
+  <h1>Retransmission (RTO) — quiz</h1>
+  <p class="lead">Check your understanding of lesson 11. Pick an answer, hit <strong>Check</strong>, and read the explanation. Nothing is recorded — it's a self-check before you move on, not the <code>/validate-step</code> gate.</p>
+  <div id="quiz"></div>
+  <script type="application/json" id="quiz-data">{"questions": [{"q": "When a retransmission timer fires before a segment is ACKed, the lesson says to resend the segment but NOT advance SND.NXT. Why must SND.NXT stay put on a resend?", "options": ["A retransmission reuses the same sequence numbers, so the bytes already occupy that sequence space; bumping SND.NXT would lie about how much new data has been sent", "SND.NXT can only advance when an ACK arrives, never when sending", "Advancing SND.NXT would shrink the receive window and stall the peer", "The retransmitted segment must carry a fresh sequence number to avoid confusing the peer"], "answer": 0, "explain": "A retransmission re-sends the exact same bytes at the exact same sequence numbers, so that sequence space is already accounted for; SND.NXT tracks the next NEW byte to send and must not move on a resend. The distractor about a fresh sequence number is the explicit common-bug misconception, since reusing the same seq is what lets the peer recognize the duplicate."}, {"q": "The lesson keeps the tcb package pure (it may import time and sync, but never os/net/syscall) and has the tcp package perform the actual resend. Why is the resend itself placed in tcp rather than tcb?", "options": ["Because the time.Ticker that drives resends only works inside the tcp package", "Because writing the segment to the device is I/O, and the project keeps tcb free of I/O so it stays a pure, testable state machine", "Because tcb cannot compute deadlines without access to the network device", "Because the retransmit queue must live in the same package as the socket buffers"], "answer": 1, "explain": "tcb is the transmission control block state machine and the project deliberately keeps it I/O-free so it can be unit-tested deterministically; the actual write to the TUN device is I/O and belongs in tcp. The queue computes deadlines and decides what to resend, but the side-effecting write happens at the I/O boundary in tcp."}, {"q": "The lesson injects a Clock interface here, after earlier lessons deliberately avoided premature interfaces. What is the specific justification for the interface in this lesson?", "options": ["It lets the stack swap between monotonic and wall-clock time at runtime", "It is required by RFC 6298 for the RTO estimator", "It allows tests to advance time manually and assert timeout behavior without any real sleeping, making time-dependent logic deterministic", "It decouples the retransmit queue from the goroutine that drives it"], "answer": 2, "explain": "Retransmission is time-dependent, and calling time.Now/time.Sleep directly makes tests slow and flaky; a fake clock the test advances by hand makes the timeout behavior deterministic. The lesson calls this the one place premature abstraction pays off, and RFC 6298 does not require any interface."}, {"q": "Why does the lesson say to SKIP RTT measurement on retransmitted segments (Karn's algorithm)?", "options": ["Retransmitted segments carry no payload, so there is nothing to time", "You cannot tell whether an ACK is for the original transmission or the retransmission, so the measured RTT would be ambiguous and could corrupt the SRTT estimate", "Measuring on retransmits would double-count the same RTT sample", "RFC 6298 forbids any RTT measurement once exponential backoff has started"], "answer": 1, "explain": "When a segment has been retransmitted, an arriving ACK could be acknowledging either the original or the resent copy, so the elapsed time is ambiguous and would distort SRTT/RTTVAR; Karn's algorithm avoids this by not sampling retransmitted segments. It is not that the segment lacks data or that any measurement is structurally forbidden."}, {"q": "The lesson notes that Ack() must prune entries from the retransmit queue, and frames forgetting to do so as a common bug. What goes wrong if Ack() never removes acknowledged segments?", "options": ["SND.UNA can never advance past the unpruned entries", "The queue resends data the peer has already ACKed when those stale deadlines expire", "The RTO estimator clamps to 60s and never recovers", "The Clock stops firing because the queue is full"], "answer": 1, "explain": "An ACK advancing SND.UNA past a segment's last byte means that segment is delivered and should be removed; if it stays queued, its deadline will eventually fire and the stack will needlessly resend already-acknowledged data. SND.UNA advancement is independent of pruning, and the RTO clamp/Clock are unrelated to this bug."}]}</script>
+</article>
+</main>
+
+<nav class="lesson-nav">
+  <a class="prev" href="11-retransmission.html"><span class="dir">← Re-read lesson</span><span class="ttl">11 · Retransmission (RTO)</span></a>
+  <a class="next" href="12-active-open.html"><span class="dir">Next lesson →</span><span class="ttl">12 · Active open (client)</span></a>
+</nav>
+
+<footer class="site">TCP From Scratch · build a TCP/IP stack in Go, one lesson at a time</footer>
+
+<script src="assets/lesson.js"></script>
+<script src="assets/quiz.js"></script>
+</body>
+</html>
