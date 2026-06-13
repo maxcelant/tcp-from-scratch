@@ -103,6 +103,31 @@ hints:
     <span class="flag"><b>FIN</b> = 0x01</span>
   </div>
 
+  <h3>The MSS option</h3>
+  <p>Options live between byte 20 and <code>DataOffset×4</code>. They're a list of <strong>TLV</strong> (Type-Length-Value) entries. The only one we handle is <strong>MSS</strong> (Maximum Segment Size) — it's exactly 4 bytes:</p>
+
+  <div class="bytemap">
+    <div class="bytemap-ruler">
+      <span>0</span><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>10</span><span>11</span><span>12</span><span>13</span><span>14</span><span>15</span><span>16</span><span>17</span><span>18</span><span>19</span><span>20</span><span>21</span><span>22</span><span>23</span><span>24</span><span>25</span><span>26</span><span>27</span><span>28</span><span>29</span><span>30</span><span>31</span>
+    </div>
+    <div class="bytemap-rows">
+      <div class="field b-cyan"   style="--bits:8"><span class="fname">Kind</span><span class="fbits">1 b · =2</span></div>
+      <div class="field b-green"  style="--bits:8"><span class="fname">Length</span><span class="fbits">1 b · =4</span></div>
+      <div class="field b-amber"  style="--bits:16"><span class="fname">MSS Value</span><span class="fbits">2 bytes</span></div>
+    </div>
+    <div class="bytemap-caption">The MSS option is <strong>4 bytes total</strong>: <code>kind</code> + <code>length</code> + a 2-byte value. The <code>length</code> field counts the whole option (including the kind and length bytes) — that's the TLV convention. The <code>MSS Value</code> is the <code>uint16</code> you store in <code>Header.MSS</code>.</div>
+  </div>
+
+  <p>So "the MSS option is 4 bytes" and "MSS is 2 bytes" are two different things: the option is the whole TLV blob on the wire, while the value is just the last two bytes. For a SYN carrying only MSS, <code>DataOffset=6</code> (24-byte header), and bytes 20–23 hold exactly this option.</p>
+
+  <p>Parsing options is a walk over the TLV list. Read <code>kind</code>; if it's MSS (2) read the value, otherwise honor the <code>length</code> byte to skip it:</p>
+  <ul>
+    <li><strong>kind=0</strong> (End of Option List) — stop. Single byte, no length.</li>
+    <li><strong>kind=1</strong> (No-Op / padding) — skip 1 byte. Single byte, no length.</li>
+    <li><strong>kind=2</strong> (MSS) — length=4, read the 2-byte value.</li>
+    <li><strong>any other kind</strong> — read its <code>length</code> byte and jump that many bytes forward.</li>
+  </ul>
+
   <h3>The pseudo-header checksum (the twist)</h3>
   <p>TCP's checksum doesn't just cover the TCP segment. It covers a <strong>pseudo-header</strong> built from fields in the IPv4 header, concatenated (conceptually) in front of the TCP segment:</p>
 
